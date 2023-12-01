@@ -10,6 +10,8 @@ def train():
     # Render the scene from its POV
 
     # Compare rendered image and ground truth
+    print(cam_info)
+    print(scene[1])
 
 
 if __name__ == '__main__':
