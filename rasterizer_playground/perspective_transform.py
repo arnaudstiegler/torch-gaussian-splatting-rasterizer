@@ -22,17 +22,21 @@ camera_args = {
     'pixel_height': 1.0
 }
 
-
-def perspective_project(triangle: np.ndarray, camera_args: Dict[str, Any]) -> np.ndarray:
+def project_to_camera_space(triangle, camera_args):
     camera_to_world = camera_args['camera_to_world']
-    width = camera_args['width']
-    height = camera_args['height']
-    pixel_width = camera_args['pixel_width']
-    pixel_height = camera_args['pixel_height']
 
     # World space to camera space
     world_to_camera = np.linalg.inv(camera_to_world)
     triangle_camera = np.dot(triangle, world_to_camera[:3, :3]) + world_to_camera[3, :-1]
+    return triangle_camera
+
+
+def perspective_project(triangle: np.ndarray, camera_args: Dict[str, Any]) -> np.ndarray:
+    width = camera_args['width']
+    height = camera_args['height']
+    pixel_width = camera_args['pixel_width']
+    pixel_height = camera_args['pixel_height']
+    triangle_camera = project_to_camera_space(triangle, camera_args)
 
     # Projection onto canvas by dividing by the z-coordinate (since canvas dist is unit)
     # Note that we also drop the z-axis, which would be needed to determine visibility

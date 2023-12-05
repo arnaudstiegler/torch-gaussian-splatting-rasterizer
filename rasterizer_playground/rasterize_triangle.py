@@ -1,6 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from rasterizer_playground.perspective_transform import perspective_project
+from rasterizer_playground.perspective_transform import perspective_project, project_to_camera_space
 
 def edge_function(p1, p2, p3) -> float:
     '''
@@ -29,9 +29,9 @@ triangle_colors = np.array([[255,0.0,0.0], [0.0,255,0.0], [0.0,0.0,255]])
 camera_args = {
     # No rotation, just "stepping back" from the origin
     'camera_to_world': np.array([
-        [1.0, 0.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0, 0.0],
-        [0.0, 0.0, 1.0, 0.0],
+        [1.0, 0.8, 0.0, 0.0],
+        [0.2, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 0.9, 0.0],
         [0.0, 0.0, -1.0, 1.0]
     ]),
     # We assume the distance between the camera and the canvas is one unit
@@ -51,15 +51,27 @@ screen = np.zeros((int(camera_args['width'] / camera_args['pixel_width']), int(c
 # Find the bbox for the triangle so that we don't uselessly go over pixels
 bbox = np.concatenate([np.min(raster_triangle[:, :2], axis=0), np.max(raster_triangle[:, :2], axis=0)]).astype(int)
 
+# Pre-computing for perspective correct interpolation
+camera_triangle = project_to_camera_space(triangle, camera_args)
+invert_depth = 1 / camera_triangle[:, 2]
+
 for x_value in range(bbox[0], bbox[2]):
     for y_value in range(bbox[1], bbox[3]):
         is_in, barycentric_weights = is_in_triangle([x_value, y_value], raster_triangle)
         if is_in:
+            # This is an incorrect interpolation (since the projection is non-linear)
+            # screen[x_value, y_value, :] = (
+            #     barycentric_weights[0]*triangle_colors[0] + 
+            #     barycentric_weights[1]*triangle_colors[1] +
+            #     barycentric_weights[2]*triangle_colors[2] 
+            #     )
             # Assign color as a weighted sum of the colors of the 3 vertices
-            screen[x_value, y_value, :] = (
-                barycentric_weights[0]*triangle_colors[0] + 
-                barycentric_weights[1]*triangle_colors[1] +
-                barycentric_weights[2]*triangle_colors[2] 
+            # using perspective-correct interpolation
+            depth = 1/((barycentric_weights[0]*invert_depth[0]) + (barycentric_weights[1]*invert_depth[1]) + (barycentric_weights[2]*invert_depth[2]))
+            screen[x_value, y_value, :] = depth*(
+                barycentric_weights[0]*(triangle_colors[0]*invert_depth[0]) + 
+                barycentric_weights[1]*(triangle_colors[1]*invert_depth[1]) +
+                barycentric_weights[2]*(triangle_colors[2]*invert_depth[2]) 
                 )
 
 # Marking the triangle vertices another color
