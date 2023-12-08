@@ -7,7 +7,6 @@
             "args": [
                 "-std=c++17",
                 "-fdiagnostics-color=always",
-                "-g",
                 "${file}",
                 "-o",
                 "${fileDirname}/${fileBasenameNoExtension}"
