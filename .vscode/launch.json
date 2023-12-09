@@ -1,10 +1,18 @@
 {
-    // Use IntelliSense to learn about possible attributes.
-    // Hover to view descriptions of existing attributes.
-    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
-    "configurations": [
-        
-
+    "configurations": [    
+        {
+            "name": "C/C++: Debug CMake Project",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/main",  // Adjust this path
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",  // Or the directory your executable expects
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "lldb"
+            // "preLaunchTask": "C/C++: clang++ build active file" // You might not need this
+        }
     ]
 }

@@ -25,8 +25,6 @@ focal_x, focal_y, center_x, center_y = cam_intrinsics.params
 rotation_matrix = quaternion_to_rotation_matrix(qvec)
 projection_matrix = np.eye(4,4)
 
-import ipdb; ipdb.set_trace()
-
 projection_matrix[:3, :3]
 
 

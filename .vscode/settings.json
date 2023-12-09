@@ -72,6 +72,27 @@
         "type_traits": "cpp",
         "utility": "cpp",
         "format": "cpp",
-        "cinttypes": "cpp"
-    }
+        "cinttypes": "cpp",
+        "valarray": "cpp",
+        "__tree": "cpp",
+        "codecvt": "cpp",
+        "condition_variable": "cpp",
+        "csignal": "cpp",
+        "forward_list": "cpp",
+        "fstream": "cpp",
+        "future": "cpp",
+        "iostream": "cpp",
+        "list": "cpp",
+        "map": "cpp",
+        "regex": "cpp",
+        "semaphore": "cpp",
+        "set": "cpp",
+        "shared_mutex": "cpp",
+        "thread": "cpp",
+        "typeindex": "cpp",
+        "unordered_set": "cpp"
+    },
+    "C_Cpp.default.cppStandard": "c++20",
+    "cmake.sourceDirectory": "/Users/arnaudstiegler/gaussian-splat/c++_playground/basic_rasterizer",
+    "C_Cpp.default.configurationProvider": "ms-vscode.makefile-tools"
 }
