@@ -44,7 +44,6 @@ def perspective_project(triangle: np.ndarray, camera_args: Dict[str, Any]) -> np
 
     # Project to NDC
     ndc_triangle = np.divide(projected_triangle + np.array([width // 2, height // 2]), np.array([width, height])[None, :])
-
     # Project to raster space
     raster_triangle = np.floor(np.divide(ndc_triangle * np.array([width, height])[None, :], np.array([pixel_width, pixel_height])))
     raster_triangle = raster_triangle.astype(int)
@@ -54,7 +53,6 @@ def perspective_project(triangle: np.ndarray, camera_args: Dict[str, Any]) -> np
 
 if __name__ == '__main__':
     raster_triangle  = perspective_project(triangle, camera_args)
-    print(raster_triangle)
 
     # Generate image
     screen = np.zeros((int(camera_args['width'] / camera_args['pixel_width']), int(camera_args['height'] / camera_args['pixel_height'])))

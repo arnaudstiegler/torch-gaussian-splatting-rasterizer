@@ -22,7 +22,7 @@ Steps:
 using namespace torch::indexing;
 
 torch::Tensor project_to_camera(torch::Tensor triangle, torch::Tensor world_to_camera){
-  torch::Tensor rotation = torch::matmul(world_to_camera.slice(0,0,3).slice(1,0,3), triangle);
+  torch::Tensor rotation = torch::matmul(triangle, world_to_camera.slice(0,0,3).slice(1,0,3));
   torch::Tensor translation = world_to_camera.index({-1, Slice(0, 3, 1)});
   return  rotation + translation;
 }
@@ -33,6 +33,7 @@ torch::Tensor perspective_divide(torch::Tensor triangle, int screen_distance){
   */
   torch::Tensor x_y_coordinates = triangle.index({Slice(), Slice(None, 2)});
   torch::Tensor z_coordinates = triangle.index({Slice(), Slice(2,3)});
+
   torch::Tensor screen_projection = torch::divide(x_y_coordinates, z_coordinates) * screen_distance;
 
   // Add back the z-coordinates as this will be used downstream
@@ -40,35 +41,36 @@ torch::Tensor perspective_divide(torch::Tensor triangle, int screen_distance){
 }
 
 torch::Tensor project_to_NDC(torch::Tensor triangle, int screen_height, int screen_width){
-  // In-place multiplication and substraction
-  triangle.index({Slice(), Slice(0,1)}).sub_({screen_width / 2.0}).mul_(1.0/screen_width);
-  triangle.index({Slice(), Slice(1,2)}).sub_({screen_height / 2.0}).mul_(1.0/screen_height);
-
-  std::cout << 1/screen_width << std::endl;
-
-  return triangle;
+  // In-place division and substraction
+  // "Normalize" to [-1, 1] range
+  // triangle.index({Slice(), Slice(0,2)}).sub_(torch::tensor({screen_width / 2.0, screen_height / 2.0})).div_(torch::tensor({screen_width, screen_height}));
+  torch::Tensor ndc_triangle = triangle.index({Slice(), Slice(0,2)}).div(torch::tensor({screen_width/2.0, screen_height/2.0}));
+  return ndc_triangle;
 }
 
 torch::Tensor project_to_raster_space(torch::Tensor triangle, int screen_height, int screen_width, float pixel_height, float pixel_width){
   /*
   We undo what we did for NDC space (the normalization), might be missing a piece
   */
-  triangle.index({Slice(), Slice(0,1)}).add_({screen_width / 2.0}).mul_(screen_width).mul_(1.0/pixel_width);
-  triangle.index({Slice(), Slice(1,2)}).add_({screen_height / 2.0}).mul_(screen_height).mul_(1.0/pixel_height);
-
-  return triangle.to(torch::kLong);
+  // Rescale to [-w/2, w/2]
+  torch::Tensor a = triangle.mul(torch::tensor({screen_width / 2.0, screen_height / 2.0}));
+  // Center on the screen (i.e the origin of camera coords should be a (w/2, h/2))
+  torch::Tensor b = a.index({Slice(), Slice(0,2)}).add(
+    torch::tensor({screen_width / 2.0, screen_height / 2.0})
+    );
+  // Turn it into pixel coordinates
+  torch::Tensor c = b.div(torch::tensor({pixel_width, pixel_height}));
+  return c.to(torch::kLong);
 }
 
 
 torch::Tensor generate_image_tensor(torch::Tensor triangle, int screen_height, int screen_width, float pixel_height, float pixel_width){
-  long size_x = static_cast<long>(screen_height / pixel_height);
-  long size_y = static_cast<long>(screen_width / pixel_width);
+  long size_x = static_cast<long>(screen_width / pixel_width);
+  long size_y = static_cast<long>(screen_height / pixel_height);
   torch::Tensor black_screen = torch::zeros({size_x, size_y});
 
   // Marking 1 point for now
   black_screen.index({triangle.index({0,0}).item<int>(), triangle.index({0,1}).item<int>()}) = 255;
-
-  std::cout << black_screen.index({triangle.index({0,0}).item<int>(), triangle.index({0,1}).item<int>()});
 
   return black_screen;
 }
@@ -97,9 +99,9 @@ int main() {
   // TODO: double-check that this is correct
   /*
   projection:
-  -9.5238   0.0000   1.1111
-  11.9048   0.0000   1.1111
-  0.0000   5.5556   1.1111
+  0.0000   0.0000   0.0000
+  11.9048  -9.5238   0.0000
+  -1.1905   5.9524   0.0000
   */
 
   torch::Tensor screen_projection = perspective_divide(projection, canvas_distance);
@@ -107,25 +109,21 @@ int main() {
   /*
   Screen projection
 
-  -8.5714   0.0000   1.1111
-  10.7143   0.0000   1.1111
-  0.0000   5.0000   1.1111
+  0.0000   0.0000   1.1111
+  10.7143  -8.5714   1.1111
+  -1.0714   5.3571   1.1111
   */
 
   // At this point, we should be filtering out the vertices that are outside the canvas, but we'll skip for now
-
-  std::cout << screen_projection << std::endl;
 
   torch::Tensor NDC_projection = project_to_NDC(screen_projection, screen_height, screen_width);
 
   /*
   NDC_projection (into -1 / 1)
-  -0.8429 -0.5000  1.1111
-  -0.0714 -0.5000  1.1111
-  -0.5000 -0.3000  1.1111
+  -0.5000 -0.5000  1.1111
+  -0.0714 -0.8429  1.1111
+  -0.5429 -0.2857  1.1111
   */
-
-  std::cout << NDC_projection << std::endl;
 
   // We isolate the z-coordinates before casting to Long for rasterization
   torch::Tensor z_buffer = NDC_projection.index({Slice(), Slice(2, 3)});
@@ -134,14 +132,12 @@ int main() {
   /*
   raster_space_projection
 
-  29142  30000      1
-  31071  30000      1
-  30000  30500      1
+1250.0000  1250.0000
+ 2321.4287   392.8572
+ 1142.8572  1785.7144
   */
-  
-  std::cout << raster_space_projection << std::endl;
 
-  torch::Tensor screen = generate_image_tensor(triangle, screen_height, screen_width, pixel_height, pixel_width);
+  torch::Tensor screen = generate_image_tensor(raster_space_projection, screen_height, screen_width, pixel_height, pixel_width);
 
   screen = screen.to(torch::kU8);
   // Ensure tensor is contiguous
@@ -151,8 +147,8 @@ int main() {
   cv::Mat image(screen.sizes()[0], screen.sizes()[1], CV_8UC1, screen.data_ptr<uchar>());
 
   // Save or display the image
-  cv::imwrite("output.png", image);
-  cv::imshow("Output Image", image);
+  cv::imwrite("/Users/arnaudstiegler/gaussian-splat/output.png", image);
+  // cv::imshow("Output Image", image);
   // cv::waitKey(0);
 
   
