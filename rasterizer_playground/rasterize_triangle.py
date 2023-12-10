@@ -46,6 +46,8 @@ camera_args = {
 
 raster_triangle = perspective_project(triangle, camera_args)
 
+print(raster_triangle)
+
 screen = np.zeros((int(camera_args['width'] / camera_args['pixel_width']), int(camera_args['height'] / camera_args['pixel_height']), 3))
 
 # Find the bbox for the triangle so that we don't uselessly go over pixels
