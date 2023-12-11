@@ -5,10 +5,10 @@
             "name": "C/C++: Debug CMake Project",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/build/main",  // Adjust this path
+            "program": "c++_playground/basic_rasterizer/build/main",  // Adjust this path
             "args": [],
             "stopAtEntry": false,
-            "cwd": "${workspaceFolder}",  // Or the directory your executable expects
+            "cwd": "c++_playground/basic_rasterizer/",  // Or the directory your executable expects
             "environment": [],
             "externalConsole": false,
             "MIMode": "lldb"

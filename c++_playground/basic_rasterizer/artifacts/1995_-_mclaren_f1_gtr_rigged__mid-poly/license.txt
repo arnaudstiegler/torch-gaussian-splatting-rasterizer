@@ -1,0 +1,11 @@
+Model Information:
+* title:	1995 - McLaren F1 GTR (Rigged) | Mid-Poly
+* source:	https://sketchfab.com/3d-models/1995-mclaren-f1-gtr-rigged-mid-poly-d9d779fd7cbc42759b40f93751a58300
+* author:	Mahan Rasouli (https://sketchfab.com/Mahan-Rasouli)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "1995 - McLaren F1 GTR (Rigged) | Mid-Poly" (https://sketchfab.com/3d-models/1995-mclaren-f1-gtr-rigged-mid-poly-d9d779fd7cbc42759b40f93751a58300) by Mahan Rasouli (https://sketchfab.com/Mahan-Rasouli) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

@@ -94,5 +94,8 @@
     },
     "C_Cpp.default.cppStandard": "c++20",
     "cmake.sourceDirectory": "/Users/arnaudstiegler/gaussian-splat/c++_playground/basic_rasterizer",
+    "cmake.configureSettings": {
+          "CMAKE_TOOLCHAIN_FILE": "/Users/arnaudstiegler/vcpkg/scripts/buildsystems/vcpkg.cmake"
+    },
     "C_Cpp.default.configurationProvider": "ms-vscode.makefile-tools"
 }
