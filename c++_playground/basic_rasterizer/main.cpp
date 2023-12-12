@@ -18,6 +18,7 @@ Steps:
 #include <torch/torch.h>
 #include <iostream>
 #include <opencv2/opencv.hpp>
+#include "read_gltf.cpp"
 
 using namespace torch::indexing;
 
@@ -150,7 +151,6 @@ int main() {
   cv::imwrite("/Users/arnaudstiegler/gaussian-splat/output.png", image);
   // cv::imshow("Output Image", image);
   // cv::waitKey(0);
-
-  
+  int returnValue = parse_gltf();
   return 0;
 }
