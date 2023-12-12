@@ -3,6 +3,10 @@ import numpy as np
 import struct
 import collections
 
+'''
+This is coming from the official implementation
+'''
+
 CameraModel = collections.namedtuple(
     "CameraModel", ["model_id", "model_name", "num_params"])
 Camera = collections.namedtuple(

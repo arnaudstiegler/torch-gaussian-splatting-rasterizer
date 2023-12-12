@@ -11,8 +11,8 @@
             "cwd": "c++_playground/basic_rasterizer/",  // Or the directory your executable expects
             "environment": [],
             "externalConsole": false,
-            "MIMode": "lldb"
-            // "preLaunchTask": "C/C++: clang++ build active file" // You might not need this
+            "MIMode": "lldb",
+            "preLaunchTask": "C/C++: clang++ build active file" // You might not need this
         }
     ]
 }
