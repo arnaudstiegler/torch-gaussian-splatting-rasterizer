@@ -25,16 +25,16 @@ def project_to_camera_space(points: np.ndarray, world_to_camera: np.ndarray) -> 
     # Note: @ is just a matmul
     return gaussian_means @ world_to_camera[:3, :3] + world_to_camera[-1, :3]
 
-def get_covariance_matrix_from_mesh(mesh: meshio.Mesh):
-    scales = np.stack([mesh.point_data['scale_0'], mesh.point_data['scale_1'], mesh.point_data['scale_2']])
-    rotations = np.stack([mesh.point_data['rot_0'], mesh.point_data['rot_1'], mesh.point_data['rot_2'], mesh.point_data['rot_3']])
+def get_covariance_matrix_from_mesh(mesh: PlyElement):
+    scales = np.stack([mesh.elements[0]['scale_0'], mesh.elements[0]['scale_1'], mesh.elements[0]['scale_2']])
+    rotations = np.stack([mesh.elements[0]['rot_0'], mesh.elements[0]['rot_1'], mesh.elements[0]['rot_2'], mesh.elements[0]['rot_3']])
     
     rotation_matrices = quaternion_to_rotation_matrix(rotations).reshape(rotations.shape[-1], 3, 3)
     scale_matrices = np.zeros((scales.shape[-1], 3, 3))
     indices = np.arange(3)
     
     scale_matrices[:, indices, indices] = scales.T
-    return rotation_matrices @ scale_matrices @ scale_matrices.T @ rotation_matrices.T
+    return rotation_matrices @ scale_matrices @ np.transpose(scale_matrices, (0, 2, 1)) @ np.transpose(rotation_matrices, (0, 2, 1))
 
 def get_world_to_camera_matrix(qvec: np.ndarray, tvec: np.ndarray) -> np.ndarray:
     rotation_matrix = quaternion_to_rotation_matrix(qvec)
@@ -82,17 +82,29 @@ if __name__ == '__main__':
 
     camera_space_gaussian_means = project_to_camera_space(gaussian_means, world_to_camera)
 
-    import ipdb; ipdb.set_trace()
     # Perspective project, i.e project on the screen
     # P'(x) = (P(x)/P(z))*fx
     projected_points = (camera_space_gaussian_means[:, :2] / camera_space_gaussian_means[:, -1][:, None])*focals  # The None allows to broadcast the division
 
+    # For the covariance, we only use the rotation/scale part of the transformation but not the translation
+    # Also note that the perspective-divide does not apply in this scenario
+    projected_covariances = get_covariance_matrix_from_mesh(plydata) @ world_to_camera[:3, :3]
+
+    import ipdb; ipdb.set_trace()
+
+    filtered_gaussians = filter_view_frustum(gaussian_means, None, cam_info)
+
+    # Filter points outside of the screen (shouldn't this be done through the frustum culling???)
+    # That's the viewport clipping
+    projected_points = projected_points[np.abs(projected_points[:,0])<= (width // 2)]
+    projected_points = projected_points[np.abs(projected_points[:,1])<= (height // 2)]
+
     # # Project to NDC
-    ndc_triangle = np.divide(projected_points + np.array([width // 2, height // 2]), np.array([width, height])[None, :])
+    ndc_means = np.divide(projected_points, np.array([width/2, height/2])[None, :])
     # # Project to raster space
     # raster_triangle = np.floor(np.divide(ndc_triangle * np.array([width, height])[None, :], np.array([pixel_width, pixel_height])))
     # raster_triangle = raster_triangle.astype(int)
-    import ipdb;ipdb.set_trace()
+    
 
     # BEWARE: meshio does not return x,y,z coordinates ?!
     # mesh = meshio.read('data/trained_model/bonsai/point_cloud/iteration_30000/point_cloud.ply')
@@ -103,7 +115,9 @@ if __name__ == '__main__':
     import math
     num_x_tiles = math.floor(cam_info[1].width / 16)
     num_y_tiles = math.floor(cam_info[1].height / 16)
-    filtered_gaussians = filter_view_frustum(gaussian_means, None, cam_info)
+
+    import ipdb;ipdb.set_trace()
+    tiles = np.divide(ndc_means*np.array([width//2, height//2]), np.array([num_x_tiles, num_y_tiles]))    
 
     '''
     We then instantiate each Gaussian according to the number of tiles they overlap and assign each instance a 
