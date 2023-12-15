@@ -21,7 +21,7 @@ def quaternion_to_rotation_matrix(q: np.ndarray) -> np.ndarray:
         [2*x*z - 2*y*w_q, 2*y*z + 2*x*w_q, 1 - 2*x**2 - 2*y**2]
     ])
 
-def project_to_camera_space(points: np.ndarray, world_to_camera: np.ndarray) -> np.ndarray:
+def project_to_camera_space(gaussian_means: np.ndarray, world_to_camera: np.ndarray) -> np.ndarray:
     # Note: @ is just a matmul
     return gaussian_means @ world_to_camera[:3, :3] + world_to_camera[-1, :3]
 
@@ -40,12 +40,12 @@ def get_world_to_camera_matrix(qvec: np.ndarray, tvec: np.ndarray) -> np.ndarray
     rotation_matrix = quaternion_to_rotation_matrix(qvec)
     projection_matrix = np.zeros((4,4))
     projection_matrix[:3, :3] = rotation_matrix
-    projection_matrix[3,:3] = tvec
+    projection_matrix[:3, 3] = tvec
     projection_matrix[3,3] = 1
     return projection_matrix
 
 def filter_view_frustum(gaussian_means: np.ndarray, gaussian_scales: np.ndarray, cam_info: Camera):
-    # Apparently, we can't infer near/far clipping planes from the camera info alone
+    # Should we just filter directly by screen size?
 
     # From the paper: "Specifically, we only keep Gaussians with a 99% confidence interval intersecting the view frustum"
     # cam_info.params[0] is the focal length on x-axis
@@ -90,8 +90,6 @@ if __name__ == '__main__':
     # Also note that the perspective-divide does not apply in this scenario
     projected_covariances = get_covariance_matrix_from_mesh(plydata) @ world_to_camera[:3, :3]
 
-    import ipdb; ipdb.set_trace()
-
     filtered_gaussians = filter_view_frustum(gaussian_means, None, cam_info)
 
     # Filter points outside of the screen (shouldn't this be done through the frustum culling???)
@@ -104,25 +102,41 @@ if __name__ == '__main__':
     # # Project to raster space
     # raster_triangle = np.floor(np.divide(ndc_triangle * np.array([width, height])[None, :], np.array([pixel_width, pixel_height])))
     # raster_triangle = raster_triangle.astype(int)
-    
-
-    # BEWARE: meshio does not return x,y,z coordinates ?!
-    # mesh = meshio.read('data/trained_model/bonsai/point_cloud/iteration_30000/point_cloud.ply')
-
-    
-
    
     import math
     num_x_tiles = math.floor(cam_info[1].width / 16)
     num_y_tiles = math.floor(cam_info[1].height / 16)
 
-    import ipdb;ipdb.set_trace()
-    tiles = np.divide(ndc_means*np.array([width//2, height//2]), np.array([num_x_tiles, num_y_tiles]))    
+    # Here we're doing one tile per gaussian but we should do that based on overlap with their radii
+    # So should probably be a [Num_gaussian, num_x_tiles, num_y_tiles]
+    # tiles = np.divide(ndc_means*np.array([width//2, height//2]), np.array([num_x_tiles, num_y_tiles]))
+    
+    # We approximate by considering each gaussian only contributes to a single pixel
+    pixels_attribution = (ndc_means*np.array([width//2, height//2]) + np.array([width//2, height//2])).astype(int)
+
+
 
     '''
     We then instantiate each Gaussian according to the number of tiles they overlap and assign each instance a 
     key that combines view space depth and tile ID.
     '''
+    screen = np.ones((int(width / 1), int(height / 1)))*255
+    screen = screen
+
+    # For each pixel, we can combine color without taking into account opacity for now
+    screen[pixels_attribution] = 0
+
+    # from PIL import Image
+    # img = Image.fromarray(screen)
+    # img.show()
+
     import ipdb; ipdb.set_trace()
 
+    import matplotlib.pyplot as plt
+
+    plt.figure(figsize=(10, 10), dpi=100)  # Adjust the figure size and dpi as needed
+    plt.imshow(screen)
+    plt.show()
+
+    import ipdb; ipdb.set_trace()
     # We then sort Gaussians based on these keys using a single fast GPU Radix sort
