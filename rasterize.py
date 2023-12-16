@@ -44,8 +44,9 @@ def get_world_to_camera_matrix(qvec: np.ndarray, tvec: np.ndarray) -> np.ndarray
     projection_matrix[3,3] = 1
     return projection_matrix
 
-def filter_view_frustum(gaussian_means: np.ndarray, gaussian_scales: np.ndarray, cam_info: Camera):
-    # Should we just filter directly by screen size?
+def filter_view_frustum(gaussian_means: np.ndarray, cam_info: Camera):
+    # TODO: should remove gaussians that are closer than the focal length
+    # TODO: should add the same logic as above but for the y-axis
 
     # From the paper: "Specifically, we only keep Gaussians with a 99% confidence interval intersecting the view frustum"
     # cam_info.params[0] is the focal length on x-axis
@@ -54,14 +55,8 @@ def filter_view_frustum(gaussian_means: np.ndarray, gaussian_scales: np.ndarray,
 
     # TODO: for now we approximate the viewing frustum filtering -> only keep gaussians for which the mean is within the radius
     # But we should take into account the spread as well
-    filtered_gaussians = gaussian_means[np.absolute(gaussian_means[:, 0]) <= max_radius]
-
-    # TODO: should remove gaussians that are closer than the focal length
-    # TODO: should add the same logic as above but for the y-axis
-
-    logger.info(f'Keeping {filtered_gaussians.shape[0] / gaussian_means.shape[0] :2f}% of the gaussians after culling')
-
-    return filtered_gaussians
+    fov_filtering = np.absolute(gaussian_means[:, 0]) <= max_radius
+    return fov_filtering
 
 
 if __name__ == '__main__':
@@ -82,20 +77,22 @@ if __name__ == '__main__':
 
     camera_space_gaussian_means = project_to_camera_space(gaussian_means, world_to_camera)
 
+    gaussian_filtering = filter_view_frustum(camera_space_gaussian_means, cam_info)
+
     # Perspective project, i.e project on the screen
     # P'(x) = (P(x)/P(z))*fx
     projected_points = (camera_space_gaussian_means[:, :2] / camera_space_gaussian_means[:, -1][:, None])*focals  # The None allows to broadcast the division
 
+    # Filter points outside of the screen (shouldn't this be done through the frustum culling???)
+    # That's the viewport clipping
+    screen_width_filtering = np.abs(projected_points[:,0])<= (width // 2)
+    screen_height_filtering = np.abs(projected_points[:,1])<= (height // 2)
+
+    projected_points = projected_points[gaussian_filtering & screen_width_filtering & screen_height_filtering]
+
     # For the covariance, we only use the rotation/scale part of the transformation but not the translation
     # Also note that the perspective-divide does not apply in this scenario
     projected_covariances = get_covariance_matrix_from_mesh(plydata) @ world_to_camera[:3, :3]
-
-    filtered_gaussians = filter_view_frustum(gaussian_means, None, cam_info)
-
-    # Filter points outside of the screen (shouldn't this be done through the frustum culling???)
-    # That's the viewport clipping
-    projected_points = projected_points[np.abs(projected_points[:,0])<= (width // 2)]
-    projected_points = projected_points[np.abs(projected_points[:,1])<= (height // 2)]
 
     # # Project to NDC
     ndc_means = np.divide(projected_points, np.array([width/2, height/2])[None, :])
@@ -120,23 +117,24 @@ if __name__ == '__main__':
     We then instantiate each Gaussian according to the number of tiles they overlap and assign each instance a 
     key that combines view space depth and tile ID.
     '''
-    screen = np.ones((int(width / 1), int(height / 1)))*255
-    screen = screen
+    screen = np.ones((int(width / 1), int(height / 1), 3))*255
+
+    # Size is N*3 (RGB)
+    from spherical_harmonics import sh_to_rgb
+
+    colors= np.stack([plydata.elements[0]['f_dc_0'], plydata.elements[0]['f_dc_1'], plydata.elements[0]['f_dc_2']]).T
+    colors = colors[gaussian_filtering & screen_width_filtering & screen_height_filtering]
+    rgb = sh_to_rgb(None, colors,0)
+    rgb = np.clip(rgb, 0, 1)*255
 
     # For each pixel, we can combine color without taking into account opacity for now
-    screen[pixels_attribution] = 0
+    screen[pixels_attribution[:,0], pixels_attribution[:,1]] = rgb
 
-    # from PIL import Image
-    # img = Image.fromarray(screen)
-    # img.show()
-
-    import ipdb; ipdb.set_trace()
+    # import ipdb; ipdb.set_trace()
 
     import matplotlib.pyplot as plt
 
     plt.figure(figsize=(10, 10), dpi=100)  # Adjust the figure size and dpi as needed
-    plt.imshow(screen)
+    plt.imshow(screen.transpose(1,0,2))
     plt.show()
-
-    import ipdb; ipdb.set_trace()
     # We then sort Gaussians based on these keys using a single fast GPU Radix sort

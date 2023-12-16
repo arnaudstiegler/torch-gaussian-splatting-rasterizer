@@ -6,6 +6,8 @@ class GaussianModel:
         # All parameters for the Gaussian
         # position, covariance, 𝛼 and SH coefficients
 
+        # sh_coefficients are spherical coefficients, used to generate the color based on the orientation
+
         # Rotation parameters are represented as a quaternion
         self.quaternion = Parameter(torch.zeros(1,4))
 
