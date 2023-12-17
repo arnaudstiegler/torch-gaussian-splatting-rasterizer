@@ -1,4 +1,3 @@
-from mimetypes import guess_all_extensions
 from os import read
 import numpy as np
 from data_reader_utils import Camera
@@ -7,6 +6,7 @@ import meshio
 from plyfile import PlyData, PlyElement
 import logging
 from data_reader import read_scene
+import torch
 
 logger = logging.Logger(__name__)
 
@@ -45,18 +45,27 @@ def get_world_to_camera_matrix(qvec: np.ndarray, tvec: np.ndarray) -> np.ndarray
     return projection_matrix
 
 def filter_view_frustum(gaussian_means: np.ndarray, cam_info: Camera):
-    # TODO: should remove gaussians that are closer than the focal length
-    # TODO: should add the same logic as above but for the y-axis
-
     # From the paper: "Specifically, we only keep Gaussians with a 99% confidence interval intersecting the view frustum"
-    # cam_info.params[0] is the focal length on x-axis
+    # cam_info[1].params[0] is the focal length on x-axis
     fov_x = 2*np.arctan(cam_info[1].width / (2*cam_info[1].params[0]))
-    max_radius = gaussian_means[:,2]*np.tan(fov_x/2)
+    max_radius_x = gaussian_means[:,2]*np.tan(fov_x/2)
+
+    # cam_info[1].params[1] is the focal length on y-axis
+    fov_y = 2*np.arctan(cam_info[1].height / (2*cam_info[1].params[1]))
+    max_radius_y = gaussian_means[:,2]*np.tan(fov_y/2)
 
     # TODO: for now we approximate the viewing frustum filtering -> only keep gaussians for which the mean is within the radius
     # But we should take into account the spread as well
-    fov_filtering = np.absolute(gaussian_means[:, 0]) <= max_radius
-    return fov_filtering
+    fov_x_filtering = np.absolute(gaussian_means[:, 0]) <= max_radius_x
+    fov_y_filtering = np.absolute(gaussian_means[:,1]) <= max_radius_y
+
+    # TODO: should remove gaussians that are closer than the focal length
+    # But there's something wrong with it, as all the gaussians have a mean
+    # that's much smaller than the corresponding focal length
+    # clip_plane_x_filtering = gaussian_means[:,0] < cam_info[1].params[0]
+    # clip_plane_y_filtering = gaussian_means[:,1] < cam_info[1].params[1]
+
+    return fov_x_filtering & fov_y_filtering
 
 
 if __name__ == '__main__':
@@ -89,6 +98,7 @@ if __name__ == '__main__':
     screen_height_filtering = np.abs(projected_points[:,1])<= (height // 2)
 
     projected_points = projected_points[gaussian_filtering & screen_width_filtering & screen_height_filtering]
+    gaussian_depths = gaussian_means[:, -1][gaussian_filtering & screen_width_filtering & screen_height_filtering]
 
     # For the covariance, we only use the rotation/scale part of the transformation but not the translation
     # Also note that the perspective-divide does not apply in this scenario
@@ -110,8 +120,29 @@ if __name__ == '__main__':
     
     # We approximate by considering each gaussian only contributes to a single pixel
     pixels_attribution = (ndc_means*np.array([width//2, height//2]) + np.array([width//2, height//2])).astype(int)
+    pixel_id = pixels_attribution[:, 0]*height + pixels_attribution[:, 1]
+    sorting_tensor = torch.tensor(pixel_id + gaussian_depths)
 
+    sorted_indices = torch.sort(sorting_tensor).indices
 
+    # Create mask that only keeps the first of each pixel
+    already_done = set()
+    mask = []
+    overlap = []
+    for ind in sorted_indices:
+        pixel = pixels_attribution[ind, 0]*height + pixels_attribution[ind, 1]
+        if pixel in already_done:
+            mask.append(0)
+            overlap.append(1)
+        else:
+            overlap.append(0)
+            mask.append(1)
+            already_done.add(pixel)
+    mask_tensor = torch.tensor(mask).bool()
+    overlap_tensor = torch.tensor(overlap).bool()
+
+    # Final depth-based filtering
+    pixels_attribution = pixels_attribution[overlap_tensor]
 
     '''
     We then instantiate each Gaussian according to the number of tiles they overlap and assign each instance a 
@@ -123,14 +154,13 @@ if __name__ == '__main__':
     from spherical_harmonics import sh_to_rgb
 
     colors= np.stack([plydata.elements[0]['f_dc_0'], plydata.elements[0]['f_dc_1'], plydata.elements[0]['f_dc_2']]).T
-    colors = colors[gaussian_filtering & screen_width_filtering & screen_height_filtering]
+    colors = colors[gaussian_filtering & screen_width_filtering & screen_height_filtering][overlap_tensor]
     rgb = sh_to_rgb(None, colors,0)
     rgb = np.clip(rgb, 0, 1)*255
 
     # For each pixel, we can combine color without taking into account opacity for now
     screen[pixels_attribution[:,0], pixels_attribution[:,1]] = rgb
 
-    # import ipdb; ipdb.set_trace()
 
     import matplotlib.pyplot as plt
 
