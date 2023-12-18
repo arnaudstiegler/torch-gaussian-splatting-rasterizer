@@ -1,4 +1,3 @@
-from os import read
 import numpy as np
 from data_reader_utils import Camera
 from data_reader import read_scene
@@ -7,6 +6,9 @@ from plyfile import PlyData, PlyElement
 import logging
 from data_reader import read_scene
 import torch
+# Size is N*3 (RGB)
+from spherical_harmonics import sh_to_rgb
+
 
 logger = logging.Logger(__name__)
 
@@ -84,6 +86,10 @@ if __name__ == '__main__':
     gaussian_means = np.stack([plydata.elements[0]['x'], plydata.elements[0]['y'], plydata.elements[0]['z']]).T
     world_to_camera = get_world_to_camera_matrix(qvec, tvec)
 
+    colors= np.stack([plydata.elements[0]['f_dc_0'], plydata.elements[0]['f_dc_1'], plydata.elements[0]['f_dc_2']]).T
+    rgb = sh_to_rgb(None, colors,0)
+    rgb = np.clip(rgb, 0, 1)*255
+
     camera_space_gaussian_means = project_to_camera_space(gaussian_means, world_to_camera)
 
     gaussian_filtering = filter_view_frustum(camera_space_gaussian_means, cam_info)
@@ -99,13 +105,15 @@ if __name__ == '__main__':
 
     projected_points = projected_points[gaussian_filtering & screen_width_filtering & screen_height_filtering]
     gaussian_depths = gaussian_means[:, -1][gaussian_filtering & screen_width_filtering & screen_height_filtering]
+    rgb = rgb[gaussian_filtering & screen_width_filtering & screen_height_filtering]
 
     # For the covariance, we only use the rotation/scale part of the transformation but not the translation
     # Also note that the perspective-divide does not apply in this scenario
     projected_covariances = get_covariance_matrix_from_mesh(plydata) @ world_to_camera[:3, :3]
+    projected_covariances = projected_covariances[gaussian_filtering & screen_width_filtering & screen_height_filtering]
 
     # # Project to NDC
-    ndc_means = np.divide(projected_points, np.array([width/2, height/2])[None, :])
+    ndc_means = torch.tensor(np.divide(projected_points, np.array([width/2, height/2])[None, :]))
     # # Project to raster space
     # raster_triangle = np.floor(np.divide(ndc_triangle * np.array([width, height])[None, :], np.array([pixel_width, pixel_height])))
     # raster_triangle = raster_triangle.astype(int)
@@ -116,33 +124,64 @@ if __name__ == '__main__':
 
     # Here we're doing one tile per gaussian but we should do that based on overlap with their radii
     # So should probably be a [Num_gaussian, num_x_tiles, num_y_tiles]
-    # tiles = np.divide(ndc_means*np.array([width//2, height//2]), np.array([num_x_tiles, num_y_tiles]))
+
+    '''
+    Solving for the spherical overlap issue: right now, we have a many:1 mapping between gaussians and pixels.
+    This means a given gaussian has a single corresponding pixel while a given pixel can have multiple corresponding gaussians
+    though for now we do not do alpha-blending (i.e only rasterize the closest)
+
+    Now, we want to account for the ellipsoid shape of the gaussians: the envelope will extend beyond a single pixel and it makes
+    the mapping a many:many mapping which complicates the operations from a torch perspective.
+
+    To account for it, we can create multiple instances of the same gaussian, 1 for each pixel it overlaps. That allows us to keep it
+    a fully tensor-based process while allowing for variable number of overlap per pixel
+    '''
+
+    det = torch.tensor(projected_covariances[:,0,0]*projected_covariances[:,1,1] - projected_covariances[:,1,0]*projected_covariances[:,0,1])
+    trace = torch.tensor(projected_covariances[:,0,0] + projected_covariances[:,1,1])
+
+    # Have to clamp to 0 in case lambda is negative (no guarantee it is not)
+    lambda1 = torch.clamp((trace + torch.sqrt(trace**2 - 4*det)) / 2, 0)
+    lambda2 = torch.clamp((trace - torch.sqrt(trace**2 - 4*det)) / 2, 0)
+
+    sigma1 = torch.sqrt(lambda1)
+    sigma2 = torch.sqrt(lambda2)
+
+    screen_means = ndc_means*np.array([width//2, height//2]) + np.array([width//2, height//2])
+
+    # Top-left, bottom right
+    bboxes = torch.stack([
+        screen_means[:,0] - sigma1, 
+        screen_means[:,1] - sigma2, 
+        screen_means[:,0] + sigma1,
+        screen_means[:,1] + sigma2
+        ], dim=-1)
+
+    rounded_bboxes = torch.floor(bboxes).to(int)
     
-    # We approximate by considering each gaussian only contributes to a single pixel
-    pixels_attribution = (ndc_means*np.array([width//2, height//2]) + np.array([width//2, height//2])).astype(int)
-    pixel_id = pixels_attribution[:, 0]*height + pixels_attribution[:, 1]
-    sorting_tensor = torch.tensor(pixel_id + gaussian_depths)
+    all_instances = []
 
-    sorted_indices = torch.sort(sorting_tensor).indices
+    import tqdm
 
-    # Create mask that only keeps the first of each pixel
-    already_done = set()
-    mask = []
-    overlap = []
-    for ind in sorted_indices:
-        pixel = pixels_attribution[ind, 0]*height + pixels_attribution[ind, 1]
-        if pixel in already_done:
-            mask.append(0)
-            overlap.append(1)
-        else:
-            overlap.append(0)
-            mask.append(1)
-            already_done.add(pixel)
-    mask_tensor = torch.tensor(mask).bool()
-    overlap_tensor = torch.tensor(overlap).bool()
+    for bbox_index, bbox in enumerate(tqdm.tqdm(rounded_bboxes)):
+        if (bbox[2] - bbox[0])*(bbox[3] - bbox[1]) == 0:
+            # This means the gaussian doesn't cover any pixel
+            continue
+        
+        # Clamping since it has to fit in the screen
+        x_grid = torch.clamp(torch.arange(bbox[0], bbox[2]), 0, width-1)
+        y_grid = torch.clamp(torch.arange(bbox[1], bbox[3]), 0, height-1)
+        mesh_x, mesh_y = torch.meshgrid(x_grid, y_grid, indexing='ij')
+        mesh = torch.stack([mesh_x, mesh_y], dim=-1).view(-1, 2)
+        all_instances.append(torch.cat([mesh, torch.tensor([bbox_index]).repeat(mesh.shape[0], 1)], dim=-1))
+    
+    # Dimension is [n_gaussian, 3] where 3 is pixel_x, pixel_y, gaussian_idx
+    gaussian_tiles = torch.cat(all_instances, dim=0)
+    gaussian_depths = gaussian_depths[gaussian_tiles[:, -1]]
+    
+    sorting_tensor = gaussian_tiles[:, -1] + gaussian_depths
 
-    # Final depth-based filtering
-    pixels_attribution = pixels_attribution[overlap_tensor]
+    sorted_indices = torch.sort(-sorting_tensor).indices
 
     '''
     We then instantiate each Gaussian according to the number of tiles they overlap and assign each instance a 
@@ -150,17 +189,16 @@ if __name__ == '__main__':
     '''
     screen = np.ones((int(width / 1), int(height / 1), 3))*255
 
-    # Size is N*3 (RGB)
-    from spherical_harmonics import sh_to_rgb
+    # Create mask that only keeps the first of each pixel
+    already_done = set()
+    mask = []
+    overlap = []
+    for ind in tqdm.tqdm(sorted_indices):
+        pixel = gaussian_tiles[ind, 0]*height + gaussian_tiles[ind, 1]
 
-    colors= np.stack([plydata.elements[0]['f_dc_0'], plydata.elements[0]['f_dc_1'], plydata.elements[0]['f_dc_2']]).T
-    colors = colors[gaussian_filtering & screen_width_filtering & screen_height_filtering][overlap_tensor]
-    rgb = sh_to_rgb(None, colors,0)
-    rgb = np.clip(rgb, 0, 1)*255
-
-    # For each pixel, we can combine color without taking into account opacity for now
-    screen[pixels_attribution[:,0], pixels_attribution[:,1]] = rgb
-
+        if pixel not in already_done:
+            # only add the first gaussian (depth-wise)
+            screen[gaussian_tiles[ind, 0], gaussian_tiles[ind, 1]] = rgb[gaussian_tiles[ind, 2]]
 
     import matplotlib.pyplot as plt
 

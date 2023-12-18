@@ -2,4 +2,5 @@ numpy
 torch
 ipdb
 matplotlib
-meshio
+plyfile
+tqdm
