@@ -1,14 +1,13 @@
 import numpy as np
 from data_reader_utils import Camera
 from data_reader import read_scene
-import meshio
 from plyfile import PlyData, PlyElement
 import logging
 from data_reader import read_scene
 import torch
-# Size is N*3 (RGB)
 from spherical_harmonics import sh_to_rgb
 import tqdm
+from utils import read_color_components
 
 logger = logging.Logger(__name__)
 
@@ -25,7 +24,7 @@ def quaternion_to_rotation_matrix(q: np.ndarray) -> np.ndarray:
 
 def project_to_camera_space(gaussian_means: np.ndarray, world_to_camera: np.ndarray) -> np.ndarray:
     # Note: @ is just a matmul
-    return gaussian_means @ world_to_camera[:3, :3] + world_to_camera[-1, :3]
+    return torch.tensor(gaussian_means @ world_to_camera[:3, :3] + world_to_camera[-1, :3])
 
 def get_covariance_matrix_from_mesh(mesh: PlyElement):
     scales = np.stack([mesh.elements[0]['scale_0'], mesh.elements[0]['scale_1'], mesh.elements[0]['scale_2']])
@@ -86,11 +85,12 @@ if __name__ == '__main__':
     gaussian_means = np.stack([plydata.elements[0]['x'], plydata.elements[0]['y'], plydata.elements[0]['z']]).T
     world_to_camera = get_world_to_camera_matrix(qvec, tvec)
 
-    colors= np.stack([plydata.elements[0]['f_dc_0'], plydata.elements[0]['f_dc_1'], plydata.elements[0]['f_dc_2']]).T
-    rgb = sh_to_rgb(None, colors,0)
-    rgb = np.clip(rgb, 0, 1)*255
-
+    
+    colors = read_color_components(plydata)
     camera_space_gaussian_means = project_to_camera_space(gaussian_means, world_to_camera)
+
+    # TODO: something buggy with the colors
+    rgb = sh_to_rgb(camera_space_gaussian_means, colors,0)
 
     gaussian_filtering = filter_view_frustum(camera_space_gaussian_means, cam_info)
 
@@ -114,9 +114,6 @@ if __name__ == '__main__':
 
     # # Project to NDC
     ndc_means = torch.tensor(np.divide(projected_points, np.array([width/2, height/2])[None, :]))
-    # # Project to raster space
-    # raster_triangle = np.floor(np.divide(ndc_triangle * np.array([width, height])[None, :], np.array([pixel_width, pixel_height])))
-    # raster_triangle = raster_triangle.astype(int)
    
     import math
     num_x_tiles = math.floor(cam_info[1].width / 16)
@@ -162,7 +159,6 @@ if __name__ == '__main__':
     all_instances = []
 
     
-
     for bbox_index, bbox in enumerate(tqdm.tqdm(rounded_bboxes)):
         if (bbox[2] - bbox[0])*(bbox[3] - bbox[1]) == 0:
             # This means the gaussian doesn't cover any pixel
@@ -193,10 +189,11 @@ if __name__ == '__main__':
     '''
     screen = np.ones((int(width / 1), int(height / 1), 3))*255
 
-    # Create mask that only keeps the first of each pixel
+    '''
+    This is of course highly inefficient: we're looping over all existing gaussians on the screen
+    and "printing" the first depth-wise gaussian for a given pixel. There's no blending at all
+    '''
     already_done = set()
-    mask = []
-    overlap = []
     for ind in tqdm.tqdm(sorted_indices):
         pixel = gaussian_tiles[ind, 0]*height + gaussian_tiles[ind, 1]
 
@@ -209,4 +206,3 @@ if __name__ == '__main__':
     plt.figure(figsize=(10, 10), dpi=100)  # Adjust the figure size and dpi as needed
     plt.imshow(screen.transpose(1,0,2))
     plt.show()
-    # We then sort Gaussians based on these keys using a single fast GPU Radix sort
