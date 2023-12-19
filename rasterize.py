@@ -8,7 +8,7 @@ from data_reader import read_scene
 import torch
 # Size is N*3 (RGB)
 from spherical_harmonics import sh_to_rgb
-
+import tqdm
 
 logger = logging.Logger(__name__)
 
@@ -161,7 +161,7 @@ if __name__ == '__main__':
     
     all_instances = []
 
-    import tqdm
+    
 
     for bbox_index, bbox in enumerate(tqdm.tqdm(rounded_bboxes)):
         if (bbox[2] - bbox[0])*(bbox[3] - bbox[1]) == 0:
@@ -173,7 +173,11 @@ if __name__ == '__main__':
         y_grid = torch.clamp(torch.arange(bbox[1], bbox[3]), 0, height-1)
         mesh_x, mesh_y = torch.meshgrid(x_grid, y_grid, indexing='ij')
         mesh = torch.stack([mesh_x, mesh_y], dim=-1).view(-1, 2)
+        
         all_instances.append(torch.cat([mesh, torch.tensor([bbox_index]).repeat(mesh.shape[0], 1)], dim=-1))
+
+        # In the version below, only keep the first pixel overlapping with the bbox
+        # all_instances.append(torch.cat([mesh, torch.tensor([bbox_index]).repeat(mesh.shape[0], 1)], dim=-1)[0,:].view(-1,3))
     
     # Dimension is [n_gaussian, 3] where 3 is pixel_x, pixel_y, gaussian_idx
     gaussian_tiles = torch.cat(all_instances, dim=0)
