@@ -23,11 +23,16 @@ def sh_to_rgb(xyz, sh, degree=0):
 
     # Gotta normalize the vector below
 
-    normalized_xyz = xyz / torch.norm(xyz, dim=1)[:, None]
+    # normalized_xyz = xyz / torch.norm(xyz, dim=1)[:, None]
 
-    x = normalized_xyz[:,0].view(-1, 1)
-    y = normalized_xyz[:,1].view(-1, 1)
-    z = normalized_xyz[:,2].view(-1, 1)
+    # x = normalized_xyz[:,0].view(-1, 1)
+    # y = normalized_xyz[:,1].view(-1, 1)
+    # z = normalized_xyz[:,2].view(-1, 1)
+
+    # TODO: see how they used the camera position for this
+    x = xyz[:,0].view(-1, 1)
+    y = xyz[:,1].view(-1, 1)
+    z = xyz[:,2].view(-1, 1)
 
     colors = sh[:, :, 0]*SH_0
 
@@ -43,11 +48,14 @@ def sh_to_rgb(xyz, sh, degree=0):
                 + SH_C2[4] * (x*x - z*z) * sh[:, :, 8]
             )
 
+
+    colors = colors + 0.5
+
     # Colors are centered around 0
     # This offset recenters them around 0.5 (so in the [0,1] range)
     # colors += 0.5
     # Since there's a trainable component in the mix, we have to clamp colors to ensure all values are positive
-    colors = torch.clamp(colors, 0, 1)*255
+    colors = torch.clamp(colors, 0, 1)
 
     return colors
 

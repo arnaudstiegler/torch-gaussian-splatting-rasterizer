@@ -91,7 +91,7 @@ if __name__ == '__main__':
     colors = read_color_components(plydata)
     camera_space_gaussian_means = project_to_camera_space(gaussian_means, world_to_camera)
 
-    rgb = sh_to_rgb(camera_space_gaussian_means, colors,2)
+    rgb = sh_to_rgb(camera_space_gaussian_means, colors, 0)
 
     gaussian_filtering = filter_view_frustum(camera_space_gaussian_means, cam_info)
 
@@ -142,11 +142,12 @@ if __name__ == '__main__':
     screen_means = ndc_means*np.array([width//2, height//2]) + np.array([width//2, height//2])
 
     # Top-left, bottom right
+    spread = 2
     bboxes = torch.stack([
-        screen_means[:,0] - sigma1, 
-        screen_means[:,1] - sigma2, 
-        screen_means[:,0] + sigma1,
-        screen_means[:,1] + sigma2
+        screen_means[:,0] - spread*sigma1, 
+        screen_means[:,1] - spread*sigma2, 
+        screen_means[:,0] + spread*sigma1,
+        screen_means[:,1] + spread*sigma2
         ], dim=-1)
 
     rounded_bboxes = torch.floor(bboxes).to(int)
@@ -155,7 +156,7 @@ if __name__ == '__main__':
 
     max_aggregation = 30
     # 4 -> (r, g, b, depth)
-    screen = torch.zeros((int(width), int(height), 4, max_aggregation))
+    screen = torch.zeros((int(width), int(height), 4, max_aggregation), dtype=float)
     last_pos = torch.zeros((int(width), int(height)))
     for bbox_index, bbox in enumerate(tqdm.tqdm(rounded_bboxes)):
         if (bbox[2] - bbox[0])*(bbox[3] - bbox[1]) == 0:
@@ -177,17 +178,31 @@ if __name__ == '__main__':
 
         valid_mesh = mesh[valid, :]
 
-        screen[valid_mesh[:, 0], valid_mesh[:,1], :, current_pos[valid].to(int)] = torch.concat([rgb[bbox_index], torch.ones((1))*gaussian_depths[bbox_index]])
+        screen[valid_mesh[:, 0], valid_mesh[:,1], :, current_pos[valid].to(int)] = torch.concat([rgb[bbox_index], torch.ones((1))*gaussian_depths[bbox_index]]).to(float)
         
         last_pos[valid_mesh[:, 0], valid_mesh[:,1]] = last_pos[valid_mesh[:, 0], valid_mesh[:,1]] + 1
     
-    import ipdb; ipdb.set_trace()
-    '''
-    We then instantiate each Gaussian according to the number of tiles they overlap and assign each instance a 
-    key that combines view space depth and tile ID.
-    '''
+
+    # Very crude blending through average color across depth
+    # We have to manually skip the 0.0 value
+    # sum_masked = screen[:,:,:3,:].sum(dim=-1)
+    # mask = torch.cat([torch.ones(screen[:,:,:3,0].shape).unsqueeze(-1), screen[:,:,:3,1:] != 0], dim=-1)
+    # count_masked = mask.sum(dim=-1)
+
+    # Calculate the mean
+    # mean_masked = sum_masked / count_masked
 
     plt.figure(figsize=(10, 10))  # Adjust the figure size and dpi as needed
-    plt.imshow(torch.mean(screen[:,:,:3,:], dim=-1).transpose(1,0))
+    plt.imshow(screen[:, :, :3, 0].transpose(1,0))
+    '''
+    Below is a color sample from the gaussians to do a color check
+    '''
+    # test = []
+    # import random
+    # for i in random.sample(list(range(rgb.shape[0])), 40):
+    #     for _ in range(50):
+    #         test.append(rgb[i,:].repeat(500,1))
+
+    # plt.imshow(torch.stack(test, dim=0))
     plt.show()
     
