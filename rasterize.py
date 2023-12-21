@@ -1,3 +1,4 @@
+from collections import defaultdict
 import numpy as np
 from data_reader_utils import Camera
 from data_reader import read_scene
@@ -8,6 +9,7 @@ import torch
 from spherical_harmonics import sh_to_rgb
 import tqdm
 from utils import read_color_components
+import matplotlib.pyplot as plt
 
 logger = logging.Logger(__name__)
 
@@ -89,8 +91,7 @@ if __name__ == '__main__':
     colors = read_color_components(plydata)
     camera_space_gaussian_means = project_to_camera_space(gaussian_means, world_to_camera)
 
-    # TODO: something buggy with the colors
-    rgb = sh_to_rgb(camera_space_gaussian_means, colors,0)
+    rgb = sh_to_rgb(camera_space_gaussian_means, colors,2)
 
     gaussian_filtering = filter_view_frustum(camera_space_gaussian_means, cam_info)
 
@@ -115,12 +116,6 @@ if __name__ == '__main__':
     # # Project to NDC
     ndc_means = torch.tensor(np.divide(projected_points, np.array([width/2, height/2])[None, :]))
    
-    import math
-    num_x_tiles = math.floor(cam_info[1].width / 16)
-    num_y_tiles = math.floor(cam_info[1].height / 16)
-
-    # Here we're doing one tile per gaussian but we should do that based on overlap with their radii
-    # So should probably be a [Num_gaussian, num_x_tiles, num_y_tiles]
 
     '''
     Solving for the spherical overlap issue: right now, we have a many:1 mapping between gaussians and pixels.
@@ -156,9 +151,12 @@ if __name__ == '__main__':
 
     rounded_bboxes = torch.floor(bboxes).to(int)
     
-    all_instances = []
+    sorted_indices = torch.sort(torch.tensor(gaussian_depths)).indices
 
-    
+    max_aggregation = 30
+    # 4 -> (r, g, b, depth)
+    screen = torch.zeros((int(width), int(height), 4, max_aggregation))
+    last_pos = torch.zeros((int(width), int(height)))
     for bbox_index, bbox in enumerate(tqdm.tqdm(rounded_bboxes)):
         if (bbox[2] - bbox[0])*(bbox[3] - bbox[1]) == 0:
             # This means the gaussian doesn't cover any pixel
@@ -169,40 +167,27 @@ if __name__ == '__main__':
         y_grid = torch.clamp(torch.arange(bbox[1], bbox[3]), 0, height-1)
         mesh_x, mesh_y = torch.meshgrid(x_grid, y_grid, indexing='ij')
         mesh = torch.stack([mesh_x, mesh_y], dim=-1).view(-1, 2)
+
         
-        all_instances.append(torch.cat([mesh, torch.tensor([bbox_index]).repeat(mesh.shape[0], 1)], dim=-1))
+        current_pos = last_pos[mesh[:,0], mesh[:,1]]
+        valid = current_pos < max_aggregation
 
-        # In the version below, only keep the first pixel overlapping with the bbox
-        # all_instances.append(torch.cat([mesh, torch.tensor([bbox_index]).repeat(mesh.shape[0], 1)], dim=-1)[0,:].view(-1,3))
+        if torch.all(valid == False):
+            continue
+
+        valid_mesh = mesh[valid, :]
+
+        screen[valid_mesh[:, 0], valid_mesh[:,1], :, current_pos[valid].to(int)] = torch.concat([rgb[bbox_index], torch.ones((1))*gaussian_depths[bbox_index]])
+        
+        last_pos[valid_mesh[:, 0], valid_mesh[:,1]] = last_pos[valid_mesh[:, 0], valid_mesh[:,1]] + 1
     
-    # Dimension is [n_gaussian, 3] where 3 is pixel_x, pixel_y, gaussian_idx
-    gaussian_tiles = torch.cat(all_instances, dim=0)
-    gaussian_depths = gaussian_depths[gaussian_tiles[:, -1]]
-    
-    sorting_tensor = gaussian_tiles[:, -1] + gaussian_depths
-
-    sorted_indices = torch.sort(-sorting_tensor).indices
-
+    import ipdb; ipdb.set_trace()
     '''
     We then instantiate each Gaussian according to the number of tiles they overlap and assign each instance a 
     key that combines view space depth and tile ID.
     '''
-    screen = np.ones((int(width / 1), int(height / 1), 3))*255
 
-    '''
-    This is of course highly inefficient: we're looping over all existing gaussians on the screen
-    and "printing" the first depth-wise gaussian for a given pixel. There's no blending at all
-    '''
-    already_done = set()
-    for ind in tqdm.tqdm(sorted_indices):
-        pixel = gaussian_tiles[ind, 0]*height + gaussian_tiles[ind, 1]
-
-        if pixel not in already_done:
-            # only add the first gaussian (depth-wise)
-            screen[gaussian_tiles[ind, 0], gaussian_tiles[ind, 1]] = rgb[gaussian_tiles[ind, 2]]
-
-    import matplotlib.pyplot as plt
-
-    plt.figure(figsize=(10, 10), dpi=100)  # Adjust the figure size and dpi as needed
-    plt.imshow(screen.transpose(1,0,2))
+    plt.figure(figsize=(10, 10))  # Adjust the figure size and dpi as needed
+    plt.imshow(torch.mean(screen[:,:,:3,:], dim=-1).transpose(1,0))
     plt.show()
+    

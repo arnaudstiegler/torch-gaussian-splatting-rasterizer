@@ -4,3 +4,4 @@ ipdb
 matplotlib
 plyfile
 tqdm
+pytorch3d

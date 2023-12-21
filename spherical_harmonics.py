@@ -21,12 +21,15 @@ def sh_to_rgb(xyz, sh, degree=0):
     Formula to retrieve RGB colors from polynomial spherical harmonics 
     '''
 
+    # Gotta normalize the vector below
+
+    normalized_xyz = xyz / torch.norm(xyz, dim=1)[:, None]
+
+    x = normalized_xyz[:,0].view(-1, 1)
+    y = normalized_xyz[:,1].view(-1, 1)
+    z = normalized_xyz[:,2].view(-1, 1)
 
     colors = sh[:, :, 0]*SH_0
-
-    x = xyz[:,0].view(-1, 1)
-    y = xyz[:,1].view(-1, 1)
-    z = xyz[:,2].view(-1, 1)
 
     if degree > 0:
         colors += - SH_C1*y*sh[:, :, 1] + SH_C1*z*sh[:, :, 2] - SH_C1*x*sh[:, :, 3]
@@ -42,7 +45,7 @@ def sh_to_rgb(xyz, sh, degree=0):
 
     # Colors are centered around 0
     # This offset recenters them around 0.5 (so in the [0,1] range)
-    colors += 0.5
+    # colors += 0.5
     # Since there's a trainable component in the mix, we have to clamp colors to ensure all values are positive
     colors = torch.clamp(colors, 0, 1)*255
 

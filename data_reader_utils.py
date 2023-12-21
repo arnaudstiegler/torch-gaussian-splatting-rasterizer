@@ -257,9 +257,3 @@ def read_colmap_bin_array(path):
         array = np.fromfile(fid, np.float32)
     array = array.reshape((width, height, channels), order="F")
     return np.transpose(array, (1, 0, 2)).squeeze()
-
-
-# class Scene:
-
-#     def __init__(self) -> None:
-#         # A priori: images, SFM for each image
