@@ -9,11 +9,9 @@ and T is the translation vector
 '''
 
 
-def read_scene():
-    path = 'data/tandt/truck/'
-
-    cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
-    cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
+def read_scene(path_to_scene: str):
+    cameras_extrinsic_file = os.path.join(path_to_scene, "sparse/0", "images.bin")
+    cameras_intrinsic_file = os.path.join(path_to_scene, "sparse/0", "cameras.bin")
     # This is the position for each image
     cam_extrinsics = read_extrinsics_binary(cameras_extrinsic_file)
 

@@ -1,4 +1,3 @@
-from collections import defaultdict
 import numpy as np
 from data_reader_utils import Camera
 from data_reader import read_scene
@@ -10,6 +9,9 @@ from spherical_harmonics import sh_to_rgb
 import tqdm
 from utils import read_color_components
 import matplotlib.pyplot as plt
+import os
+import matplotlib.pyplot as plt
+import matplotlib.image as mpimg
 
 logger = logging.Logger(__name__)
 
@@ -77,13 +79,13 @@ def filter_view_frustum(gaussian_means: np.ndarray, cam_info: Camera):
 
 if __name__ == '__main__':
     
-    scenes, cam_info = read_scene()
+    scenes, cam_info = read_scene(path_to_scene='data/bonsai')
     fx, fy, cx, cy  = cam_info[1].params
     focals = np.array([fx, fy])
     width = cam_info[1].width
     height = cam_info[1].height
     
-    scene = scenes[1]
+    scene = scenes[50]
     qvec = torch.tensor(scene.qvec)
     tvec = torch.tensor(scene.tvec)
 
@@ -189,26 +191,17 @@ if __name__ == '__main__':
         last_pos[valid_mesh[:, 0], valid_mesh[:,1]] = last_pos[valid_mesh[:, 0], valid_mesh[:,1]] + 1
     
 
-    # Very crude blending through average color across depth
-    # We have to manually skip the 0.0 value
-    # sum_masked = screen[:,:,:3,:].sum(dim=-1)
-    # mask = torch.cat([torch.ones(screen[:,:,:3,0].shape).unsqueeze(-1), screen[:,:,:3,1:] != 0], dim=-1)
-    # count_masked = mask.sum(dim=-1)
+    # Create a figure
+    plt.figure(figsize=(10, 10))
 
-    # Calculate the mean
-    # mean_masked = sum_masked / count_masked
-
-    plt.figure(figsize=(10, 10))  # Adjust the figure size and dpi as needed
+    plt.subplot(2, 1, 1)  # 2 rows, 1 column1, 1st subplot
     plt.imshow(screen[:, :, :3, 0].transpose(1,0))
-    '''
-    Below is a color sample from the gaussians to do a color check
-    '''
-    # test = []
-    # import random
-    # for i in random.sample(list(range(rgb.shape[0])), 40):
-    #     for _ in range(50):
-    #         test.append(rgb[i,:].repeat(500,1))
+    plt.title('Reconstructed Image')
 
-    # plt.imshow(torch.stack(test, dim=0))
+    # Display the second image
+    plt.subplot(2, 1, 2)  # 2 rows, 1 column, 2nd subplot
+    plt.imshow(mpimg.imread(os.path.join('data/bonsai/images', scene.name)))
+    plt.title('Reference Image')
+
     plt.show()
     
