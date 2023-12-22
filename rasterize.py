@@ -13,36 +13,40 @@ import matplotlib.pyplot as plt
 
 logger = logging.Logger(__name__)
 
-def quaternion_to_rotation_matrix(q: np.ndarray) -> np.ndarray:
+def quaternion_to_rotation_matrix(quaternion: np.ndarray) -> np.ndarray:
     '''
     This is based on the formula to get from quaternion to rotation matrix, no tricks
     '''
-    w_q, x, y, z = q
-    return np.array([
-        [1 - 2*y**2 - 2*z**2, 2*x*y - 2*z*w_q, 2*x*z + 2*y*w_q],
-        [2*x*y + 2*z*w_q, 1 - 2*x**2 - 2*z**2, 2*y*z - 2*x*w_q],
-        [2*x*z - 2*y*w_q, 2*y*z + 2*x*w_q, 1 - 2*x**2 - 2*y**2]
-    ])
+
+    w_q = quaternion[0, :]
+    x = quaternion[1, :]
+    y = quaternion[2, :]
+    z = quaternion[3, :]
+    return torch.stack([
+        torch.stack([1 - 2*y**2 - 2*z**2, 2*x*y - 2*z*w_q, 2*x*z + 2*y*w_q]),
+        torch.stack([2*x*y + 2*z*w_q, 1 - 2*x**2 - 2*z**2, 2*y*z - 2*x*w_q]),
+        torch.stack([2*x*z - 2*y*w_q, 2*y*z + 2*x*w_q, 1 - 2*x**2 - 2*y**2])
+    ]).float()
 
 def project_to_camera_space(gaussian_means: np.ndarray, world_to_camera: np.ndarray) -> np.ndarray:
     # Note: @ is just a matmul
-    return torch.tensor(gaussian_means @ world_to_camera[:3, :3] + world_to_camera[-1, :3])
+    return gaussian_means @ world_to_camera[:3, :3] + world_to_camera[-1, :3]
 
 def get_covariance_matrix_from_mesh(mesh: PlyElement):
-    scales = np.stack([mesh.elements[0]['scale_0'], mesh.elements[0]['scale_1'], mesh.elements[0]['scale_2']])
-    rotations = np.stack([mesh.elements[0]['rot_0'], mesh.elements[0]['rot_1'], mesh.elements[0]['rot_2'], mesh.elements[0]['rot_3']])
+    scales = torch.tensor(np.stack([mesh.elements[0]['scale_0'], mesh.elements[0]['scale_1'], mesh.elements[0]['scale_2']]))
+    rotations = torch.tensor(np.stack([mesh.elements[0]['rot_0'], mesh.elements[0]['rot_1'], mesh.elements[0]['rot_2'], mesh.elements[0]['rot_3']]))
     
     rotation_matrices = quaternion_to_rotation_matrix(rotations).reshape(rotations.shape[-1], 3, 3)
-    scale_matrices = np.zeros((scales.shape[-1], 3, 3))
-    indices = np.arange(3)
+    scale_matrices = torch.zeros((scales.shape[-1], 3, 3))
+    indices = torch.arange(3)
     
     scale_matrices[:, indices, indices] = scales.T
-    return rotation_matrices @ scale_matrices @ np.transpose(scale_matrices, (0, 2, 1)) @ np.transpose(rotation_matrices, (0, 2, 1))
+    return rotation_matrices @ scale_matrices @ torch.permute(scale_matrices, (0, 2, 1)) @ torch.permute(rotation_matrices, (0, 2, 1))
 
-def get_world_to_camera_matrix(qvec: np.ndarray, tvec: np.ndarray) -> np.ndarray:
-    rotation_matrix = quaternion_to_rotation_matrix(qvec)
-    projection_matrix = np.zeros((4,4))
-    projection_matrix[:3, :3] = rotation_matrix
+def get_world_to_camera_matrix(qvec: np.ndarray, tvec: np.ndarray) -> torch.Tensor:
+    rotation_matrix = quaternion_to_rotation_matrix(qvec.unsqueeze(1))
+    projection_matrix = torch.zeros((4,4))
+    projection_matrix[:3, :3] = rotation_matrix.squeeze(-1)
     projection_matrix[:3, 3] = tvec
     projection_matrix[3,3] = 1
     return projection_matrix
@@ -80,18 +84,19 @@ if __name__ == '__main__':
     height = cam_info[1].height
     
     scene = scenes[1]
-    qvec = scene.qvec
-    tvec = scene.tvec
+    qvec = torch.tensor(scene.qvec)
+    tvec = torch.tensor(scene.tvec)
 
     plydata = PlyData.read('data/trained_model/bonsai/point_cloud/iteration_30000/point_cloud.ply')
-    gaussian_means = np.stack([plydata.elements[0]['x'], plydata.elements[0]['y'], plydata.elements[0]['z']]).T
+    gaussian_means = torch.tensor(np.stack([plydata.elements[0]['x'], plydata.elements[0]['y'], plydata.elements[0]['z']]).T).float()
     world_to_camera = get_world_to_camera_matrix(qvec, tvec)
 
     
     colors = read_color_components(plydata)
     camera_space_gaussian_means = project_to_camera_space(gaussian_means, world_to_camera)
 
-    rgb = sh_to_rgb(camera_space_gaussian_means, colors, 0)
+    # TODO: degree 2 buggy
+    rgb = sh_to_rgb(gaussian_means, colors, degree=0)
 
     gaussian_filtering = filter_view_frustum(camera_space_gaussian_means, cam_info)
 
@@ -110,11 +115,11 @@ if __name__ == '__main__':
 
     # For the covariance, we only use the rotation/scale part of the transformation but not the translation
     # Also note that the perspective-divide does not apply in this scenario
-    projected_covariances = get_covariance_matrix_from_mesh(plydata) @ world_to_camera[:3, :3]
+    projected_covariances = get_covariance_matrix_from_mesh(plydata).float() @ world_to_camera[:3, :3]
     projected_covariances = projected_covariances[gaussian_filtering & screen_width_filtering & screen_height_filtering]
 
     # # Project to NDC
-    ndc_means = torch.tensor(np.divide(projected_points, np.array([width/2, height/2])[None, :]))
+    ndc_means = projected_points / torch.tensor([width/2, height/2])[None, :]
    
 
     '''
@@ -129,8 +134,8 @@ if __name__ == '__main__':
     a fully tensor-based process while allowing for variable number of overlap per pixel
     '''
 
-    det = torch.tensor(projected_covariances[:,0,0]*projected_covariances[:,1,1] - projected_covariances[:,1,0]*projected_covariances[:,0,1])
-    trace = torch.tensor(projected_covariances[:,0,0] + projected_covariances[:,1,1])
+    det = projected_covariances[:,0,0]*projected_covariances[:,1,1] - projected_covariances[:,1,0]*projected_covariances[:,0,1]
+    trace = projected_covariances[:,0,0] + projected_covariances[:,1,1]
 
     # Have to clamp to 0 in case lambda is negative (no guarantee it is not)
     lambda1 = torch.clamp((trace + torch.sqrt(trace**2 - 4*det)) / 2, 0)
@@ -142,21 +147,22 @@ if __name__ == '__main__':
     screen_means = ndc_means*np.array([width//2, height//2]) + np.array([width//2, height//2])
 
     # Top-left, bottom right
-    spread = 2
+    GAUSSIAN_SPREAD = 3
     bboxes = torch.stack([
-        screen_means[:,0] - spread*sigma1, 
-        screen_means[:,1] - spread*sigma2, 
-        screen_means[:,0] + spread*sigma1,
-        screen_means[:,1] + spread*sigma2
+        screen_means[:,0] - GAUSSIAN_SPREAD*sigma1, 
+        screen_means[:,1] - GAUSSIAN_SPREAD*sigma2, 
+        screen_means[:,0] + GAUSSIAN_SPREAD*sigma1,
+        screen_means[:,1] + GAUSSIAN_SPREAD*sigma2
         ], dim=-1)
 
     rounded_bboxes = torch.floor(bboxes).to(int)
     
-    sorted_indices = torch.sort(torch.tensor(gaussian_depths)).indices
+    sorted_indices = torch.sort(gaussian_depths).indices
 
-    max_aggregation = 30
+    # This is the max number of gaussians that we can aggregate from for a given pixel
+    MAX_AGGREGATION = 50
     # 4 -> (r, g, b, depth)
-    screen = torch.zeros((int(width), int(height), 4, max_aggregation), dtype=float)
+    screen = torch.zeros((int(width), int(height), 4, MAX_AGGREGATION)).float()
     last_pos = torch.zeros((int(width), int(height)))
     for bbox_index, bbox in enumerate(tqdm.tqdm(rounded_bboxes)):
         if (bbox[2] - bbox[0])*(bbox[3] - bbox[1]) == 0:
@@ -171,14 +177,14 @@ if __name__ == '__main__':
 
         
         current_pos = last_pos[mesh[:,0], mesh[:,1]]
-        valid = current_pos < max_aggregation
+        valid = current_pos < MAX_AGGREGATION
 
         if torch.all(valid == False):
             continue
 
         valid_mesh = mesh[valid, :]
 
-        screen[valid_mesh[:, 0], valid_mesh[:,1], :, current_pos[valid].to(int)] = torch.concat([rgb[bbox_index], torch.ones((1))*gaussian_depths[bbox_index]]).to(float)
+        screen[valid_mesh[:, 0], valid_mesh[:,1], :, current_pos[valid].int()] = torch.concat([rgb[bbox_index], torch.ones((1))*gaussian_depths[bbox_index]])
         
         last_pos[valid_mesh[:, 0], valid_mesh[:,1]] = last_pos[valid_mesh[:, 0], valid_mesh[:,1]] + 1
     

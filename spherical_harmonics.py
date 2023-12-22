@@ -34,18 +34,18 @@ def sh_to_rgb(xyz, sh, degree=0):
     y = xyz[:,1].view(-1, 1)
     z = xyz[:,2].view(-1, 1)
 
-    colors = sh[:, :, 0]*SH_0
+    colors = sh[:, 0, :]*SH_0
 
     if degree > 0:
-        colors += - SH_C1*y*sh[:, :, 1] + SH_C1*z*sh[:, :, 2] - SH_C1*x*sh[:, :, 3]
+        colors += - SH_C1*y*sh[:, 1, :] + SH_C1*z*sh[:, 2, :] - SH_C1*x*sh[:, 3, :]
 
         if degree > 1:
             colors += (
-                SH_C2[0]*x*y*sh[:, :, 4] 
-                + SH_C2[1] * y * z * sh[:, :, 5]
-                + SH_C2[2] * (2 * z*z - x*x - y*y) * sh[:, :, 6]
-                + SH_C2[3] * x * z * sh[:, :, 7]
-                + SH_C2[4] * (x*x - z*z) * sh[:, :, 8]
+                SH_C2[0]*x*y*sh[:, 4, :] 
+                + SH_C2[1] * y * z * sh[:, 5, :]
+                + SH_C2[2] * (2 * z*z - x*x - y*y) * sh[:, 6, :]
+                + SH_C2[3] * x * z * sh[:, 7, :]
+                + SH_C2[4] * (x*x - z*z) * sh[:, 8, :]
             )
 
 
