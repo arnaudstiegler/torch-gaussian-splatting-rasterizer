@@ -32,13 +32,16 @@ def quaternion_to_rotation_matrix(quaternion: np.ndarray) -> np.ndarray:
 
 def project_to_camera_space(gaussian_means: np.ndarray, world_to_camera: np.ndarray) -> np.ndarray:
     # Note: @ is just a matmul
+    # Here we project by; 1) applying the rotation, 2) adding the translation
     return gaussian_means @ world_to_camera[:3, :3] + world_to_camera[-1, :3]
 
 def get_covariance_matrix_from_mesh(mesh: PlyElement):
     scales = torch.tensor(np.stack([mesh.elements[0]['scale_0'], mesh.elements[0]['scale_1'], mesh.elements[0]['scale_2']]))
     rotations = torch.tensor(np.stack([mesh.elements[0]['rot_0'], mesh.elements[0]['rot_1'], mesh.elements[0]['rot_2'], mesh.elements[0]['rot_3']]))
     
-    rotation_matrices = quaternion_to_rotation_matrix(rotations).reshape(rotations.shape[-1], 3, 3)
+    # Because the quaternion is learned, we don't have the 
+    unit_quaternions = torch.nn.functional.normalize(rotations, p=2.0, dim = 0)
+    rotation_matrices = quaternion_to_rotation_matrix(unit_quaternions).reshape(rotations.shape[-1], 3, 3)
     scale_matrices = torch.zeros((scales.shape[-1], 3, 3))
     indices = torch.arange(3)
     
@@ -46,10 +49,13 @@ def get_covariance_matrix_from_mesh(mesh: PlyElement):
     return rotation_matrices @ scale_matrices @ torch.permute(scale_matrices, (0, 2, 1)) @ torch.permute(rotation_matrices, (0, 2, 1))
 
 def get_world_to_camera_matrix(qvec: np.ndarray, tvec: np.ndarray) -> torch.Tensor:
+    # TODO: should we normalize the quaternion first?
     rotation_matrix = quaternion_to_rotation_matrix(qvec.unsqueeze(1))
     projection_matrix = torch.zeros((4,4))
-    projection_matrix[:3, :3] = rotation_matrix.squeeze(-1)
-    projection_matrix[:3, 3] = tvec
+    projection_matrix[:3, :3] = torch.inverse(rotation_matrix.squeeze(-1))
+
+    projection_matrix[3, :3] = tvec
+    # projection_matrix[:3, 3] = -projection_matrix[:3, :3] @ tvec.float()
     projection_matrix[3,3] = 1
     return projection_matrix
 
@@ -91,6 +97,10 @@ if __name__ == '__main__':
 
     plydata = PlyData.read('data/trained_model/bonsai/point_cloud/iteration_30000/point_cloud.ply')
     gaussian_means = torch.tensor(np.stack([plydata.elements[0]['x'], plydata.elements[0]['y'], plydata.elements[0]['z']]).T).float()
+
+
+    # The coordinates of the projection/camera center are given by -R^t * T, where R^t is the inverse/transpose of 
+    # the 3x3 rotation matrix composed from the quaternion and T is the translation vector.
     world_to_camera = get_world_to_camera_matrix(qvec, tvec)
 
     
