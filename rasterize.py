@@ -55,7 +55,6 @@ def get_world_to_camera_matrix(qvec: np.ndarray, tvec: np.ndarray) -> torch.Tens
     projection_matrix[:3, :3] = torch.inverse(rotation_matrix.squeeze(-1))
 
     projection_matrix[3, :3] = tvec
-    # projection_matrix[:3, 3] = -projection_matrix[:3, :3] @ tvec.float()
     projection_matrix[3,3] = 1
     return projection_matrix
 
@@ -77,9 +76,11 @@ def filter_view_frustum(gaussian_means: np.ndarray, cam_info: Camera):
     # TODO: should remove gaussians that are closer than the focal length
     # But there's something wrong with it, as all the gaussians have a mean
     # that's much smaller than the corresponding focal length
-    # clip_plane_x_filtering = gaussian_means[:,0] < cam_info[1].params[0]
-    # clip_plane_y_filtering = gaussian_means[:,1] < cam_info[1].params[1]
+    clip_plane_x_filtering = gaussian_means[:,0] < cam_info[1].params[0]
+    clip_plane_y_filtering = gaussian_means[:,1] < cam_info[1].params[1]
 
+    # return clip_plane_x_filtering
+    # return torch.ones(gaussian_means.shape[0]).bool()
     return fov_x_filtering & fov_y_filtering
 
 
@@ -97,6 +98,7 @@ if __name__ == '__main__':
 
     plydata = PlyData.read('data/trained_model/bonsai/point_cloud/iteration_30000/point_cloud.ply')
     gaussian_means = torch.tensor(np.stack([plydata.elements[0]['x'], plydata.elements[0]['y'], plydata.elements[0]['z']]).T).float()
+    opacity = torch.sigmoid(torch.tensor(np.array(plydata.elements[0]['opacity'])))
 
 
     # The coordinates of the projection/camera center are given by -R^t * T, where R^t is the inverse/transpose of 
@@ -121,14 +123,19 @@ if __name__ == '__main__':
     screen_width_filtering = np.abs(projected_points[:,0])<= (width // 2)
     screen_height_filtering = np.abs(projected_points[:,1])<= (height // 2)
 
-    projected_points = projected_points[gaussian_filtering & screen_width_filtering & screen_height_filtering]
-    gaussian_depths = gaussian_means[:, -1][gaussian_filtering & screen_width_filtering & screen_height_filtering]
-    rgb = rgb[gaussian_filtering & screen_width_filtering & screen_height_filtering]
+    depth_filter = gaussian_means[:, -1] > 0.0
+    full_filter = gaussian_filtering & screen_width_filtering & screen_height_filtering & depth_filter
+    # TODO: bring this back
+    full_filter = torch.ones(screen_width_filtering.shape).bool()
+
+    projected_points = projected_points[full_filter]
+    gaussian_depths = gaussian_means[:, -1][full_filter]
+    rgb = rgb[full_filter]
 
     # For the covariance, we only use the rotation/scale part of the transformation but not the translation
     # Also note that the perspective-divide does not apply in this scenario
     projected_covariances = get_covariance_matrix_from_mesh(plydata).float() @ world_to_camera[:3, :3]
-    projected_covariances = projected_covariances[gaussian_filtering & screen_width_filtering & screen_height_filtering]
+    projected_covariances = projected_covariances[full_filter]
 
     # # Project to NDC
     ndc_means = projected_points / torch.tensor([width/2, height/2])[None, :]
@@ -150,31 +157,54 @@ if __name__ == '__main__':
     trace = projected_covariances[:,0,0] + projected_covariances[:,1,1]
 
     # Have to clamp to 0 in case lambda is negative (no guarantee it is not)
-    lambda1 = torch.clamp((trace + torch.sqrt(trace**2 - 4*det)) / 2, 0)
-    lambda2 = torch.clamp((trace - torch.sqrt(trace**2 - 4*det)) / 2, 0)
+    # To preven instabilities, we add the max
+    # 0.1 is the value provided by the paper
+    lambda1 = torch.clamp((trace + torch.sqrt(torch.clamp(trace**2 - 4*det, 0.1))) / 2, 0)
+    lambda2 = torch.clamp((trace - torch.sqrt(torch.clamp(trace**2 - 4*det, 0.1))) / 2, 0)
 
     sigma1 = torch.sqrt(lambda1)
     sigma2 = torch.sqrt(lambda2)
+    max_spread = torch.max(torch.stack([sigma1, sigma2], dim=-1), dim=-1).values
 
     screen_means = ndc_means*np.array([width//2, height//2]) + np.array([width//2, height//2])
 
     # Top-left, bottom right
     GAUSSIAN_SPREAD = 3
     bboxes = torch.stack([
-        screen_means[:,0] - GAUSSIAN_SPREAD*sigma1, 
-        screen_means[:,1] - GAUSSIAN_SPREAD*sigma2, 
-        screen_means[:,0] + GAUSSIAN_SPREAD*sigma1,
-        screen_means[:,1] + GAUSSIAN_SPREAD*sigma2
+        torch.clamp(screen_means[:,0] - GAUSSIAN_SPREAD*sigma1, 0, width),
+        torch.clamp(screen_means[:,1] - GAUSSIAN_SPREAD*sigma2, 0, height),
+        torch.clamp(screen_means[:,0] + GAUSSIAN_SPREAD*sigma1, 0, width),
+        torch.clamp(screen_means[:,1] + GAUSSIAN_SPREAD*sigma2, 0, height)
         ], dim=-1)
 
-    rounded_bboxes = torch.floor(bboxes).to(int)
+
+    # Clamp again for gaussians that spread outside of the screen
+    rounded_bboxes = torch.floor(torch.clamp(bboxes, 0)).to(int)
+
+    # Start doing the tiling here
+    bbox_center_x = rounded_bboxes[:, 0] + (rounded_bboxes[:, 2] - rounded_bboxes[:, 0]) / 2
+    bbox_center_y = rounded_bboxes[:, 1] + (rounded_bboxes[:, 3] - rounded_bboxes[:, 1]) / 2
+
+    bbox_tile_x = bbox_center_x // 16
+    bbox_tile_y = bbox_center_y // 16
+
+    tile_ids = bbox_tile_y * (height // 16) + bbox_tile_x
+
+    # Max number of gaussians that overlap at a certain tile
+    # max_buffer_needed = torch.max(torch.unique(tile_ids, return_counts=True)[1])
+
+    # empty_tiles = torch.zeros((width // 16, height // 16, max_buffer_needed))
+
+    # for tile_id in range(torch.max(tile_ids)):
+    #     corresponding_gaussians = tile_ids == tile_id
     
     sorted_indices = torch.sort(gaussian_depths).indices
 
     # This is the max number of gaussians that we can aggregate from for a given pixel
-    MAX_AGGREGATION = 50
+    MAX_AGGREGATION = 150
     # 4 -> (r, g, b, depth)
-    screen = torch.zeros((int(width), int(height), 4, MAX_AGGREGATION)).float()
+    screen = torch.zeros((int(width), int(height), 3)).float()
+    opacity_buffer = torch.ones((int(width), int(height), 3)).float()
     last_pos = torch.zeros((int(width), int(height)))
     for bbox_index, bbox in enumerate(tqdm.tqdm(rounded_bboxes)):
         if (bbox[2] - bbox[0])*(bbox[3] - bbox[1]) == 0:
@@ -189,15 +219,19 @@ if __name__ == '__main__':
 
         
         current_pos = last_pos[mesh[:,0], mesh[:,1]]
-        valid = current_pos < MAX_AGGREGATION
+        valid = torch.ones(current_pos.shape).bool()
 
-        if torch.all(valid == False):
-            continue
+        # if torch.all(valid == False):
+        #     continue
 
         valid_mesh = mesh[valid, :]
 
-        screen[valid_mesh[:, 0], valid_mesh[:,1], :, current_pos[valid].int()] = torch.concat([rgb[bbox_index], torch.ones((1))*gaussian_depths[bbox_index]])
+        # TODO: not accounting for x/y when taking the opacity
+        bbox_opacity = 1 - torch.exp(-opacity[bbox_index])
+        screen[valid_mesh[:, 0], valid_mesh[:,1], :] += bbox_opacity*rgb[bbox_index]*opacity_buffer[valid_mesh[:, 0], valid_mesh[:,1]]
         
+        # Update buffer and last position
+        opacity_buffer[valid_mesh[:, 0], valid_mesh[:,1]] = opacity_buffer[valid_mesh[:, 0], valid_mesh[:,1]] * (1-bbox_opacity)
         last_pos[valid_mesh[:, 0], valid_mesh[:,1]] = last_pos[valid_mesh[:, 0], valid_mesh[:,1]] + 1
     
 
@@ -205,7 +239,7 @@ if __name__ == '__main__':
     plt.figure(figsize=(10, 10))
 
     plt.subplot(2, 1, 1)  # 2 rows, 1 column1, 1st subplot
-    plt.imshow(screen[:, :, :3, 0].transpose(1,0))
+    plt.imshow(screen[:, :, :3].transpose(1,0))
     plt.title('Reconstructed Image')
 
     # Display the second image
