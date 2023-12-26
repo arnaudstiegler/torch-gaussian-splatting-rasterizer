@@ -125,8 +125,6 @@ if __name__ == '__main__':
 
     depth_filter = gaussian_means[:, -1] > 0.0
     full_filter = gaussian_filtering & screen_width_filtering & screen_height_filtering & depth_filter
-    # TODO: bring this back
-    full_filter = torch.ones(screen_width_filtering.shape).bool()
 
     projected_points = projected_points[full_filter]
     gaussian_depths = gaussian_means[:, -1][full_filter]
@@ -204,7 +202,7 @@ if __name__ == '__main__':
     MAX_AGGREGATION = 150
     # 4 -> (r, g, b, depth)
     screen = torch.zeros((int(width), int(height), 3)).float()
-    opacity_buffer = torch.ones((int(width), int(height), 3)).float()
+    opacity_buffer = torch.ones((int(width), int(height))).float()
     last_pos = torch.zeros((int(width), int(height)))
     for bbox_index, bbox in enumerate(tqdm.tqdm(rounded_bboxes)):
         if (bbox[2] - bbox[0])*(bbox[3] - bbox[1]) == 0:
@@ -226,12 +224,19 @@ if __name__ == '__main__':
 
         valid_mesh = mesh[valid, :]
 
-        # TODO: not accounting for x/y when taking the opacity
-        bbox_opacity = 1 - torch.exp(-opacity[bbox_index])
-        screen[valid_mesh[:, 0], valid_mesh[:,1], :] += bbox_opacity*rgb[bbox_index]*opacity_buffer[valid_mesh[:, 0], valid_mesh[:,1]]
+        dist_to_mean = mesh - screen_means[bbox_index]
+
+        sigma_x = projected_covariances[bbox_index,0,0]
+        sigma_y = projected_covariances[bbox_index,1,1]
+        sigma_x_y = projected_covariances[bbox_index,0,1]
+
+        gaussian_density = (1/det[bbox_index])*(0.5*(sigma_x)*(dist_to_mean[:,1]**2) + 0.5*(sigma_y)*(dist_to_mean[:,0]**2) - sigma_x_y*dist_to_mean[:,0]*dist_to_mean[:,1])
+
+        alpha = torch.clamp(opacity[bbox_index]*torch.exp(-gaussian_density), 0.0, 0.99).float()
+        screen[valid_mesh[:, 0], valid_mesh[:,1], :] += alpha[:, None]*rgb[bbox_index]*opacity_buffer[valid_mesh[:, 0], valid_mesh[:,1], None]
         
         # Update buffer and last position
-        opacity_buffer[valid_mesh[:, 0], valid_mesh[:,1]] = opacity_buffer[valid_mesh[:, 0], valid_mesh[:,1]] * (1-bbox_opacity)
+        opacity_buffer[valid_mesh[:, 0], valid_mesh[:,1]] = opacity_buffer[valid_mesh[:, 0], valid_mesh[:,1]] * (1-alpha)
         last_pos[valid_mesh[:, 0], valid_mesh[:,1]] = last_pos[valid_mesh[:, 0], valid_mesh[:,1]] + 1
     
 
