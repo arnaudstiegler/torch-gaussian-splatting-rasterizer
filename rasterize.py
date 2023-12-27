@@ -19,7 +19,6 @@ def quaternion_to_rotation_matrix(quaternion: np.ndarray) -> np.ndarray:
     '''
     This is based on the formula to get from quaternion to rotation matrix, no tricks
     '''
-
     w_q = quaternion[0, :]
     x = quaternion[1, :]
     y = quaternion[2, :]
@@ -39,7 +38,7 @@ def get_covariance_matrix_from_mesh(mesh: PlyElement):
     scales = torch.tensor(np.stack([mesh.elements[0]['scale_0'], mesh.elements[0]['scale_1'], mesh.elements[0]['scale_2']]))
     rotations = torch.tensor(np.stack([mesh.elements[0]['rot_0'], mesh.elements[0]['rot_1'], mesh.elements[0]['rot_2'], mesh.elements[0]['rot_3']]))
     
-    # Because the quaternion is learned, we don't have the 
+    # Learned quaternions do not guarantie a unit norm
     unit_quaternions = torch.nn.functional.normalize(rotations, p=2.0, dim = 0)
     rotation_matrices = quaternion_to_rotation_matrix(unit_quaternions).reshape(rotations.shape[-1], 3, 3)
     scale_matrices = torch.zeros((scales.shape[-1], 3, 3))
@@ -48,9 +47,8 @@ def get_covariance_matrix_from_mesh(mesh: PlyElement):
     scale_matrices[:, indices, indices] = scales.T
     return rotation_matrices @ scale_matrices @ torch.permute(scale_matrices, (0, 2, 1)) @ torch.permute(rotation_matrices, (0, 2, 1))
 
-def get_world_to_camera_matrix(qvec: np.ndarray, tvec: np.ndarray) -> torch.Tensor:
-    # TODO: should we normalize the quaternion first?
-    rotation_matrix = quaternion_to_rotation_matrix(qvec.unsqueeze(1))
+def get_world_to_camera_matrix(normalized_qvec: np.ndarray, tvec: np.ndarray) -> torch.Tensor:
+    rotation_matrix = quaternion_to_rotation_matrix(normalized_qvec.unsqueeze(1))
     projection_matrix = torch.zeros((4,4))
     projection_matrix[:3, :3] = torch.inverse(rotation_matrix.squeeze(-1))
 
@@ -107,6 +105,8 @@ if __name__ == '__main__':
 
     
     colors = read_color_components(plydata)
+
+    # TODO: not using the camera center
     camera_space_gaussian_means = project_to_camera_space(gaussian_means, world_to_camera)
 
     # TODO: degree 2 buggy
@@ -116,6 +116,7 @@ if __name__ == '__main__':
 
     # Perspective project, i.e project on the screen
     # P'(x) = (P(x)/P(z))*fx
+    # TODO: perspective project should use fov and focals
     projected_points = (camera_space_gaussian_means[:, :2] / camera_space_gaussian_means[:, -1][:, None])*focals  # The None allows to broadcast the division
 
     # Filter points outside of the screen (shouldn't this be done through the frustum culling???)
@@ -123,11 +124,11 @@ if __name__ == '__main__':
     screen_width_filtering = np.abs(projected_points[:,0])<= (width // 2)
     screen_height_filtering = np.abs(projected_points[:,1])<= (height // 2)
 
-    depth_filter = gaussian_means[:, -1] > 0.0
+    depth_filter = camera_space_gaussian_means[:, -1] > 0.0
     full_filter = gaussian_filtering & screen_width_filtering & screen_height_filtering & depth_filter
 
     projected_points = projected_points[full_filter]
-    gaussian_depths = gaussian_means[:, -1][full_filter]
+    gaussian_depths = camera_space_gaussian_means[:, -1][full_filter]
     rgb = rgb[full_filter]
 
     # For the covariance, we only use the rotation/scale part of the transformation but not the translation
@@ -182,24 +183,11 @@ if __name__ == '__main__':
     # Start doing the tiling here
     bbox_center_x = rounded_bboxes[:, 0] + (rounded_bboxes[:, 2] - rounded_bboxes[:, 0]) / 2
     bbox_center_y = rounded_bboxes[:, 1] + (rounded_bboxes[:, 3] - rounded_bboxes[:, 1]) / 2
-
-    bbox_tile_x = bbox_center_x // 16
-    bbox_tile_y = bbox_center_y // 16
-
-    tile_ids = bbox_tile_y * (height // 16) + bbox_tile_x
-
-    # Max number of gaussians that overlap at a certain tile
-    # max_buffer_needed = torch.max(torch.unique(tile_ids, return_counts=True)[1])
-
-    # empty_tiles = torch.zeros((width // 16, height // 16, max_buffer_needed))
-
-    # for tile_id in range(torch.max(tile_ids)):
-    #     corresponding_gaussians = tile_ids == tile_id
     
+    # radius = torch.max(torch.stack([sigma1, sigma2], dim=-1), dim=-1).values
     sorted_indices = torch.sort(gaussian_depths).indices
 
-    # This is the max number of gaussians that we can aggregate from for a given pixel
-    MAX_AGGREGATION = 150
+
     # 4 -> (r, g, b, depth)
     screen = torch.zeros((int(width), int(height), 3)).float()
     opacity_buffer = torch.ones((int(width), int(height))).float()
@@ -218,9 +206,6 @@ if __name__ == '__main__':
         
         current_pos = last_pos[mesh[:,0], mesh[:,1]]
         valid = torch.ones(current_pos.shape).bool()
-
-        # if torch.all(valid == False):
-        #     continue
 
         valid_mesh = mesh[valid, :]
 
