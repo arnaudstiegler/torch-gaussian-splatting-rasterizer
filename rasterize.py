@@ -12,8 +12,13 @@ import matplotlib.pyplot as plt
 import os
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
+import math
 
 logger = logging.Logger(__name__)
+
+
+Z_FAR = 100.0
+Z_NEAR = 0.01
 
 def quaternion_to_rotation_matrix(quaternion: np.ndarray) -> np.ndarray:
     '''
@@ -47,23 +52,43 @@ def get_covariance_matrix_from_mesh(mesh: PlyElement):
     scale_matrices[:, indices, indices] = scales.T
     return rotation_matrices @ scale_matrices @ torch.permute(scale_matrices, (0, 2, 1)) @ torch.permute(rotation_matrices, (0, 2, 1))
 
-def get_world_to_camera_matrix(normalized_qvec: np.ndarray, tvec: np.ndarray) -> torch.Tensor:
+def get_world_to_camera_matrix(normalized_qvec: np.ndarray, tvec: np.ndarray, camera_center: np.ndarray) -> torch.Tensor:
     rotation_matrix = quaternion_to_rotation_matrix(normalized_qvec.unsqueeze(1))
     projection_matrix = torch.zeros((4,4))
+
+    # For a rotation matrix, transpose <-> inverse
     projection_matrix[:3, :3] = torch.inverse(rotation_matrix.squeeze(-1))
 
     projection_matrix[3, :3] = tvec
     projection_matrix[3,3] = 1
     return projection_matrix
 
-def filter_view_frustum(gaussian_means: np.ndarray, cam_info: Camera):
-    # From the paper: "Specifically, we only keep Gaussians with a 99% confidence interval intersecting the view frustum"
-    # cam_info[1].params[0] is the focal length on x-axis
-    fov_x = 2*np.arctan(cam_info[1].width / (2*cam_info[1].params[0]))
-    max_radius_x = gaussian_means[:,2]*np.tan(fov_x/2)
+def get_projection_matrix(fov_x, fov_y):
+    tan_half_fov_x = math.tan((fov_y / 2))
+    tan_half_fov_x = math.tan((fov_x / 2))
 
-    # cam_info[1].params[1] is the focal length on y-axis
-    fov_y = 2*np.arctan(cam_info[1].height / (2*cam_info[1].params[1]))
+    top = tan_half_fov_x * Z_NEAR
+    bottom = -top
+    right = tan_half_fov_x * Z_NEAR
+    left = -right
+
+    P = torch.zeros(4, 4)
+
+    z_sign = 1.0
+
+    P[0, 0] = 2.0 * Z_NEAR / (right - left)
+    P[1, 1] = 2.0 * Z_NEAR / (top - bottom)
+    P[0, 2] = (right + left) / (right - left)
+    P[1, 2] = (top + bottom) / (top - bottom)
+    P[3, 2] = z_sign
+    P[2, 2] = z_sign * Z_FAR / (Z_FAR - Z_NEAR)
+    P[2, 3] = -(Z_FAR * Z_NEAR) / (Z_FAR - Z_NEAR)
+    return P
+
+def filter_view_frustum(gaussian_means: np.ndarray, fov_x: float, fov_y: float):
+    # From the paper: "Specifically, we only keep Gaussians with a 99% confidence interval intersecting the view frustum"
+    
+    max_radius_x = gaussian_means[:,2]*np.tan(fov_x/2)
     max_radius_y = gaussian_means[:,2]*np.tan(fov_y/2)
 
     # TODO: for now we approximate the viewing frustum filtering -> only keep gaussians for which the mean is within the radius
@@ -98,21 +123,24 @@ if __name__ == '__main__':
     gaussian_means = torch.tensor(np.stack([plydata.elements[0]['x'], plydata.elements[0]['y'], plydata.elements[0]['z']]).T).float()
     opacity = torch.sigmoid(torch.tensor(np.array(plydata.elements[0]['opacity'])))
 
-
     # The coordinates of the projection/camera center are given by -R^t * T, where R^t is the inverse/transpose of 
     # the 3x3 rotation matrix composed from the quaternion and T is the translation vector.
-    world_to_camera = get_world_to_camera_matrix(qvec, tvec)
+    world_to_camera = get_world_to_camera_matrix(qvec, tvec, camera_center=np.array([cx, cy]))
+    fov_x = 2*np.arctan(cam_info[1].width / (2*cam_info[1].params[0]))
+    fov_y = 2*np.arctan(cam_info[1].height / (2*cam_info[1].params[1]))
+    projection_matrix = get_projection_matrix(fov_x, fov_y)
+
+    full_proj_transform = (world_to_camera.unsqueeze(0).bmm(projection_matrix.unsqueeze(0))).squeeze(0)
 
     
     colors = read_color_components(plydata)
 
-    # TODO: not using the camera center
     camera_space_gaussian_means = project_to_camera_space(gaussian_means, world_to_camera)
 
-    # TODO: degree 2 buggy
+    # TODO: degree 2 and 3 buggy
     rgb = sh_to_rgb(gaussian_means, colors, degree=0)
 
-    gaussian_filtering = filter_view_frustum(camera_space_gaussian_means, cam_info)
+    gaussian_filtering = filter_view_frustum(camera_space_gaussian_means, fov_x, fov_y)
 
     # Perspective project, i.e project on the screen
     # P'(x) = (P(x)/P(z))*fx
@@ -130,6 +158,7 @@ if __name__ == '__main__':
     projected_points = projected_points[full_filter]
     gaussian_depths = camera_space_gaussian_means[:, -1][full_filter]
     rgb = rgb[full_filter]
+    opacity = opacity[full_filter]
 
     # For the covariance, we only use the rotation/scale part of the transformation but not the translation
     # Also note that the perspective-divide does not apply in this scenario
@@ -138,7 +167,25 @@ if __name__ == '__main__':
 
     # # Project to NDC
     ndc_means = projected_points / torch.tensor([width/2, height/2])[None, :]
-   
+
+    # This is new, and exactly based on what the paper is doing
+    # points = gaussian_means @ full_proj_transform[:3,:] + full_proj_transform[-1,:]
+    # p_w = 1.0 / (points[:,-1]+ 0.0000001)
+    # p_proj = points[:,:-1] * p_w[:, None]
+    
+    # screen_width_filtering = np.abs(p_proj[:,0])<= (width // 2)
+    # screen_height_filtering = np.abs(p_proj[:,1])<= (height // 2)
+    # depth_filter = camera_space_gaussian_means[:, -1] > 0.0
+
+    # ndc_means = p_proj[:,:2] / torch.tensor([width/2, height/2])[None, :]
+
+    # new_filter = screen_width_filtering & screen_height_filtering & depth_filter
+    # ndc_means = ndc_means[new_filter]
+
+    # projected_covariances = projected_covariances[new_filter]
+    # rgb = rgb[new_filter]
+    # gaussian_depths = camera_space_gaussian_means[:, -1][new_filter]
+    # opacity = opacity[new_filter]
 
     '''
     Solving for the spherical overlap issue: right now, we have a many:1 mapping between gaussians and pixels.
@@ -158,8 +205,8 @@ if __name__ == '__main__':
     # Have to clamp to 0 in case lambda is negative (no guarantee it is not)
     # To preven instabilities, we add the max
     # 0.1 is the value provided by the paper
-    lambda1 = torch.clamp((trace + torch.sqrt(torch.clamp(trace**2 - 4*det, 0.1))) / 2, 0)
-    lambda2 = torch.clamp((trace - torch.sqrt(torch.clamp(trace**2 - 4*det, 0.1))) / 2, 0)
+    lambda1 = torch.clamp((trace/2.0 + torch.sqrt(torch.clamp((trace**2)/4.0 - det, 0.1))), 0)
+    lambda2 = torch.clamp((trace/2.0 - torch.sqrt(torch.clamp((trace**2)/4.0 - det, 0.1))), 0)
 
     sigma1 = torch.sqrt(lambda1)
     sigma2 = torch.sqrt(lambda2)
@@ -169,20 +216,17 @@ if __name__ == '__main__':
 
     # Top-left, bottom right
     GAUSSIAN_SPREAD = 3
+    # TODO: double-check the spread here (did I invert sigma1 and sigma2?)
     bboxes = torch.stack([
-        torch.clamp(screen_means[:,0] - GAUSSIAN_SPREAD*sigma1, 0, width),
-        torch.clamp(screen_means[:,1] - GAUSSIAN_SPREAD*sigma2, 0, height),
-        torch.clamp(screen_means[:,0] + GAUSSIAN_SPREAD*sigma1, 0, width),
-        torch.clamp(screen_means[:,1] + GAUSSIAN_SPREAD*sigma2, 0, height)
+        torch.clamp(screen_means[:,0] - GAUSSIAN_SPREAD*max_spread, 0, width),
+        torch.clamp(screen_means[:,1] - GAUSSIAN_SPREAD*max_spread, 0, height),
+        torch.clamp(screen_means[:,0] + GAUSSIAN_SPREAD*max_spread, 0, width),
+        torch.clamp(screen_means[:,1] + GAUSSIAN_SPREAD*max_spread, 0, height)
         ], dim=-1)
 
 
     # Clamp again for gaussians that spread outside of the screen
-    rounded_bboxes = torch.floor(torch.clamp(bboxes, 0)).to(int)
-
-    # Start doing the tiling here
-    bbox_center_x = rounded_bboxes[:, 0] + (rounded_bboxes[:, 2] - rounded_bboxes[:, 0]) / 2
-    bbox_center_y = rounded_bboxes[:, 1] + (rounded_bboxes[:, 3] - rounded_bboxes[:, 1]) / 2
+    rounded_bboxes = torch.ceil(torch.clamp(bboxes, 0)).to(int)
     
     # radius = torch.max(torch.stack([sigma1, sigma2], dim=-1), dim=-1).values
     sorted_indices = torch.sort(gaussian_depths).indices
@@ -191,7 +235,12 @@ if __name__ == '__main__':
     # 4 -> (r, g, b, depth)
     screen = torch.zeros((int(width), int(height), 3)).float()
     opacity_buffer = torch.ones((int(width), int(height))).float()
+
+    # TODO: might wanna add back last_pos to limit the number of gaussians that get backpropagated
     last_pos = torch.zeros((int(width), int(height)))
+
+
+    # TODO: remove from the for loop everything that can be frontloaded
     for bbox_index, bbox in enumerate(tqdm.tqdm(rounded_bboxes)):
         if (bbox[2] - bbox[0])*(bbox[3] - bbox[1]) == 0:
             # This means the gaussian doesn't cover any pixel
