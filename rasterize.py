@@ -116,21 +116,19 @@ def compute_covering_bbox(screen_means: torch.Tensor, projected_covariances: tor
     # Have to clamp to 0 in case lambda is negative (no guarantee it is not)
     # To preven instabilities, we add the max
     # 0.1 is the value provided by the paper
-    lambda1 = torch.clamp((trace/2.0 + torch.sqrt(torch.clamp((trace**2)/4.0 - det, 0.1))), 0)
-    lambda2 = torch.clamp((trace/2.0 - torch.sqrt(torch.clamp((trace**2)/4.0 - det, 0.1))), 0)
+    lambda1 = trace/2.0 + torch.sqrt(torch.max((trace**2)/4.0, torch.tensor([0.1])))
+    lambda2 = trace/2.0 - torch.sqrt(torch.max((trace**2)/4.0, torch.tensor([0.1])))
 
-    sigma1 = torch.sqrt(lambda1)
-    sigma2 = torch.sqrt(lambda2)
+    sigma1 = torch.ceil(torch.sqrt(lambda1))
+    sigma2 = torch.ceil(torch.sqrt(lambda2))
     max_spread = torch.max(torch.stack([sigma1, sigma2], dim=-1), dim=-1).values
 
-    # Top-left, bottom right
     GAUSSIAN_SPREAD = 3
-    # TODO: double-check the spread here (did I invert sigma1 and sigma2?)
     bboxes = torch.stack([
-        torch.clamp(screen_means[:,0] - GAUSSIAN_SPREAD*sigma1, 0, width),
-        torch.clamp(screen_means[:,1] - GAUSSIAN_SPREAD*sigma2, 0, height),
-        torch.clamp(screen_means[:,0] + GAUSSIAN_SPREAD*sigma1, 0, width),
-        torch.clamp(screen_means[:,1] + GAUSSIAN_SPREAD*sigma2, 0, height)
+        torch.clamp(screen_means[:,0] - GAUSSIAN_SPREAD*max_spread, 0, width),
+        torch.clamp(screen_means[:,1] - GAUSSIAN_SPREAD*max_spread, 0, height),
+        torch.clamp(screen_means[:,0] + GAUSSIAN_SPREAD*max_spread, 0, width),
+        torch.clamp(screen_means[:,1] + GAUSSIAN_SPREAD*max_spread, 0, height)
         ], dim=-1)
 
 
@@ -140,28 +138,28 @@ def compute_covering_bbox(screen_means: torch.Tensor, projected_covariances: tor
     return rounded_bboxes
 
 
-def compute_2d_covariance(cov_matrices, screen_space_points, tan_fov_x, tan_fov_y, focals, world_to_camera):
+def compute_2d_covariance(cov_matrices, camera_space_points, tan_fov_x, tan_fov_y, focals, world_to_camera):
     limx = torch.tensor([1.3 * tan_fov_x])
     limy = torch.tensor([1.3 * tan_fov_y])
 
     focal_x, focal_y = focals
 
-    txtz = screen_space_points[:,0] / screen_space_points[:,2]
-    tytz = screen_space_points[:,1] / screen_space_points[:,2]
-    tx = torch.min(limx, torch.max(-limx, txtz)) * screen_space_points[:,2]
-    ty = torch.min(limy, torch.max(-limy, tytz)) * screen_space_points[:,2]
+    txtz = camera_space_points[:,0] / camera_space_points[:,2]
+    tytz = camera_space_points[:,1] / camera_space_points[:,2]
+    tx = torch.min(limx, torch.max(-limx, txtz)) * camera_space_points[:,2]
+    ty = torch.min(limy, torch.max(-limy, tytz)) * camera_space_points[:,2]
 
-    J = torch.zeros((screen_space_points.shape[0], 3,3))
-    J[:,0,0] = focal_x / screen_space_points[:,2]
-    J[:,0,2] = -(focal_x * tx) / (screen_space_points[:,2] * screen_space_points[:,2])
-    J[:,1,1] = focal_y / screen_space_points[:,2]
-    J[:,1,2] = -(focal_y * ty) / (screen_space_points[:,2] * screen_space_points[:,2])
+    J = torch.zeros((camera_space_points.shape[0], 3,3))
+    J[:,0,0] = focal_x / camera_space_points[:,2]
+    J[:,0,2] = -(focal_x * tx) / (camera_space_points[:,2] * camera_space_points[:,2])
+    J[:,1,1] = focal_y / camera_space_points[:,2]
+    J[:,1,2] = -(focal_y * ty) / (camera_space_points[:,2] * camera_space_points[:,2])
 
     W = world_to_camera[:-1, :-1]
 
     T = W @ J
 
-    vrk = torch.zeros((screen_space_points.shape[0], 3,3))
+    vrk = torch.zeros((camera_space_points.shape[0], 3,3))
     vrk[:,0,0] = cov_matrices[:,0,0]
     vrk[:,0,1] = cov_matrices[:,0,1]
     vrk[:,0,2] = cov_matrices[:,0,2]
@@ -179,7 +177,7 @@ def compute_2d_covariance(cov_matrices, screen_space_points, tan_fov_x, tan_fov_
     proj_cov[:0,0] += 0.3
     proj_cov[:,1,1] += 0.3
 
-    return proj_cov
+    return proj_cov[:, :2,:2]
 
 
 # def projection_old_way():
@@ -244,11 +242,12 @@ if __name__ == '__main__':
 
     colors = read_color_components(plydata)
 
+    # TODO: double-check how this is computed
     camera_space_gaussian_means = project_to_camera_space(gaussian_means, world_to_camera)
 
     # TODO: degree 2 and 3 buggy
     # TODO: redefine cam center using the camera projection matrix?
-    rgb = sh_to_rgb(gaussian_means, colors, tvec, degree=0)
+    rgb = sh_to_rgb(gaussian_means, colors, tvec, degree=2)
 
 
     # This is new, and exactly based on what the paper is doing
@@ -257,6 +256,7 @@ if __name__ == '__main__':
     p_w = 1.0 / (points[:,-1]+ 0.0000001)
     p_proj = points[:,:-1] * p_w[:, None]
     
+    # TODO: add depth filtering back
     screen_width_filtering = torch.abs(points[:,0]) < points[:,-1]
     screen_height_filtering = torch.abs(points[:,1]) < points[:,-1]
 
@@ -268,16 +268,15 @@ if __name__ == '__main__':
     p_proj = p_proj[new_filter]
 
     new_cov = compute_2d_covariance(get_covariance_matrix_from_mesh(plydata).float(), camera_space_gaussian_means, tan_fov_x, tan_fov_y, focals, world_to_camera)
-    projected_covariances = torch.stack([torch.eye(3)*20 for n in range(new_cov.shape[0])])
-    projected_covariances = projected_covariances[new_filter]
-    # projected_covariances = new_cov[new_filter]    
+    # projected_covariances = torch.stack([torch.eye(3)*20 for n in range(new_cov.shape[0])])
+    # projected_covariances = projected_covariances[new_filter]
+    projected_covariances = new_cov[new_filter]
 
     screen_means = p_proj[:, :2]*np.array([width//2, height//2]) + np.array([width//2, height//2])
     rounded_bboxes = compute_covering_bbox(screen_means, projected_covariances, width, height)
 
-    # radius = torch.max(torch.stack([sigma1, sigma2], dim=-1), dim=-1).values
-    sorted_indices = torch.sort(-gaussian_depths).indices
-
+    # TODO: unsure what depth to use here
+    sorted_indices = torch.sort(-points[:,2]).indices
 
     # 4 -> (r, g, b, depth)
     screen = torch.zeros((int(width), int(height), 3)).float()
@@ -303,26 +302,33 @@ if __name__ == '__main__':
 
         dist_to_mean = mesh - screen_means[bbox_index]
 
-        sigma_x = projected_covariances[bbox_index,0,0]
-        sigma_y = projected_covariances[bbox_index,1,1]
-        sigma_x_y = projected_covariances[bbox_index,0,1]
+        # { float(cov[0][0]), float(cov[0][1]), float(cov[1][1]) }
+        #  cov.z * det_inv, -cov.y * det_inv, cov.x * det_inv 
+
+        det_inv = 1 / (projected_covariances[bbox_index,0,0]*projected_covariances[bbox_index,1,1] - projected_covariances[bbox_index,1,0]*projected_covariances[bbox_index,0,1])
+
+        sigma_x = projected_covariances[bbox_index,1,1] * det_inv
+        sigma_y = -projected_covariances[bbox_index,0,1] * det_inv
+        sigma_x_y = projected_covariances[bbox_index,0,0] * det_inv
 
         # gaussian_density = (1/det[bbox_index])*(0.5*(sigma_x)*(dist_to_mean[:,1]**2) + 0.5*(sigma_y)*(dist_to_mean[:,0]**2) - sigma_x_y*dist_to_mean[:,0]*dist_to_mean[:,1])
-        gaussian_density = -(0.5*(sigma_x)*(dist_to_mean[:,0]**2) + 0.5*(sigma_y)*(dist_to_mean[:,1]**2) - sigma_x_y*dist_to_mean[:,0]*dist_to_mean[:,1])
+        gaussian_density = -(0.5*(sigma_x)*(dist_to_mean[:,0]*dist_to_mean[:,0]) + 0.5*(sigma_y)*(dist_to_mean[:,1]*dist_to_mean[:,1]) - sigma_x_y*dist_to_mean[:,0]*dist_to_mean[:,1])
+
+        only_pos = gaussian_density >= 0
 
         alpha = torch.clamp(opacity[bbox_index]*torch.exp(gaussian_density), 0.0, 0.99).float()
-        # TODO: remove this alpha here
-        alpha = torch.ones(alpha.shape)*0.99
+        # TODO: we're hardcoding alpha here
+        alpha = torch.ones(alpha.shape)*0.2
 
         # For numerical stability, we ignore 
-        valid = alpha > 1/255
+        valid = (alpha > 1/255) & only_pos
         valid_mesh = mesh[valid, :]
 
         screen[valid_mesh[:, 0], valid_mesh[:,1], :] += alpha[valid, None]*rgb[bbox_index]*opacity_buffer[valid_mesh[:, 0], valid_mesh[:,1], None]
         
         # Update buffer and last position
         opacity_buffer[valid_mesh[:, 0], valid_mesh[:,1]] = opacity_buffer[valid_mesh[:, 0], valid_mesh[:,1]] * (1-alpha[valid])
-        last_pos[valid_mesh[:, 0], valid_mesh[:,1]] = last_pos[valid_mesh[:, 0], valid_mesh[:,1]] + 1
+        # last_pos[valid_mesh[:, 0], valid_mesh[:,1]] = last_pos[valid_mesh[:, 0], valid_mesh[:,1]] + 1
  
     # Create a figure
     plt.figure(figsize=(10, 10))
