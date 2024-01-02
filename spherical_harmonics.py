@@ -26,23 +26,19 @@ SH_C3 = [
 ]
 
 
-def sh_to_rgb(xyz, sh, degree=0):
+def sh_to_rgb(xyz, sh, cam_center, degree=0):
     '''
     Formula to retrieve RGB colors from polynomial spherical harmonics 
     '''
 
-    # Do we need to normalize coordinates for this?
+    # TODO: check how the cam center is obtained -> camera_center = self.world_view_transform.inverse()[3, :3]
 
-    # normalized_xyz = xyz / torch.norm(xyz, dim=1)[:, None]
+    dir = xyz - cam_center
+    dir = dir / torch.norm(cam_center)
 
-    # x = normalized_xyz[:,0].view(-1, 1)
-    # y = normalized_xyz[:,1].view(-1, 1)
-    # z = normalized_xyz[:,2].view(-1, 1)
-
-
-    x = xyz[:,0].view(-1, 1)
-    y = xyz[:,1].view(-1, 1)
-    z = xyz[:,2].view(-1, 1)
+    x = dir[:,0].view(-1, 1)
+    y = dir[:,1].view(-1, 1)
+    z = dir[:,2].view(-1, 1)
 
     colors = sh[:, 0, :]*SH_0
 
