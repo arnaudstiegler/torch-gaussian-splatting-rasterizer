@@ -1,3 +1,4 @@
+from tarfile import BLOCKSIZE
 import numpy as np
 from data_reader_utils import Camera
 from data_reader import read_scene
@@ -19,6 +20,8 @@ logger = logging.Logger(__name__)
 
 Z_FAR = 100.0
 Z_NEAR = 0.01
+GAUSSIAN_SPREAD = 3
+BLOCK_SIZE = 16
 
 def quaternion_to_rotation_matrix(quaternion: np.ndarray) -> np.ndarray:
     '''
@@ -37,6 +40,9 @@ def quaternion_to_rotation_matrix(quaternion: np.ndarray) -> np.ndarray:
 def project_to_camera_space(gaussian_means: np.ndarray, world_to_camera: np.ndarray) -> np.ndarray:
     # Note: @ is just a matmul
     # Here we project by; 1) applying the rotation, 2) adding the translation
+    	# 	matrix[0] * p.x + matrix[4] * p.y + matrix[8] * p.z + matrix[12],
+		# matrix[1] * p.x + matrix[5] * p.y + matrix[9] * p.z + matrix[13],
+		# matrix[2] * p.x + matrix[6] * p.y + matrix[10] * p.z + matrix[14],
     return gaussian_means @ world_to_camera[:3, :3] + world_to_camera[-1, :3]
 
 def get_covariance_matrix_from_mesh(mesh: PlyElement):
@@ -116,25 +122,20 @@ def compute_covering_bbox(screen_means: torch.Tensor, projected_covariances: tor
     # Have to clamp to 0 in case lambda is negative (no guarantee it is not)
     # To preven instabilities, we add the max
     # 0.1 is the value provided by the paper
-    lambda1 = trace/2.0 + torch.sqrt(torch.max((trace**2)/4.0, torch.tensor([0.1])))
-    lambda2 = trace/2.0 - torch.sqrt(torch.max((trace**2)/4.0, torch.tensor([0.1])))
+    lambda1 = trace/2.0 + torch.sqrt(torch.max((trace**2)/4.0 - det, torch.tensor([0.1])))
+    lambda2 = trace/2.0 - torch.sqrt(torch.max((trace**2)/4.0 - det, torch.tensor([0.1])))
 
-    sigma1 = torch.ceil(torch.sqrt(lambda1))
-    sigma2 = torch.ceil(torch.sqrt(lambda2))
-    max_spread = torch.max(torch.stack([sigma1, sigma2], dim=-1), dim=-1).values
+    max_spread = torch.ceil(GAUSSIAN_SPREAD*torch.sqrt(torch.max(torch.stack([lambda1, lambda2], dim=-1), dim=-1).values))
 
-    GAUSSIAN_SPREAD = 3
     bboxes = torch.stack([
-        torch.clamp(screen_means[:,0] - GAUSSIAN_SPREAD*max_spread, 0, width),
-        torch.clamp(screen_means[:,1] - GAUSSIAN_SPREAD*max_spread, 0, height),
-        torch.clamp(screen_means[:,0] + GAUSSIAN_SPREAD*max_spread, 0, width),
-        torch.clamp(screen_means[:,1] + GAUSSIAN_SPREAD*max_spread, 0, height)
+        torch.clamp((screen_means[:,0] - (max_spread)) / BLOCK_SIZE, 0, width-1),
+        torch.clamp((screen_means[:,1] - (max_spread)) / BLOCK_SIZE, 0, height-1),
+        torch.clamp((screen_means[:,0] + (max_spread + BLOCK_SIZE - 1)) / BLOCK_SIZE, 0, width-1),
+        torch.clamp((screen_means[:,1] + (max_spread + BLOCK_SIZE - 1)) / BLOCK_SIZE, 0, height-1)
         ], dim=-1)
 
-
     # Clamp again for gaussians that spread outside of the screen
-    rounded_bboxes = torch.ceil(torch.clamp(bboxes, 0)).to(int)
-
+    rounded_bboxes = torch.ceil(bboxes).to(int)
     return rounded_bboxes
 
 
@@ -164,17 +165,17 @@ def compute_2d_covariance(cov_matrices, camera_space_points, tan_fov_x, tan_fov_
     vrk[:,0,1] = cov_matrices[:,0,1]
     vrk[:,0,2] = cov_matrices[:,0,2]
     vrk[:,1,0] = cov_matrices[:,0,1]
-    vrk[:,1,1] = cov_matrices[:,1,0]
-    vrk[:,1,2] = cov_matrices[:,1,1]
+    vrk[:,1,1] = cov_matrices[:,1,1]
+    vrk[:,1,2] = cov_matrices[:,1,2]
     vrk[:,2,0] = cov_matrices[:,0,2]
-    vrk[:,2,1] = cov_matrices[:,1,1]
-    vrk[:,2,2] = cov_matrices[:,1,2]
+    vrk[:,2,1] = cov_matrices[:,1,2]
+    vrk[:,2,2] = cov_matrices[:,2,2]
 
     proj_cov = T.permute(0,2,1) * vrk.permute(0,2,1) * T
 
     # Apply low-pass filter: every Gaussian should be at least
     # one pixel wide/high. Discard 3rd row and column.
-    proj_cov[:0,0] += 0.3
+    proj_cov[:,0,0] += 0.3
     proj_cov[:,1,1] += 0.3
 
     return proj_cov[:, :2,:2]
@@ -214,6 +215,8 @@ def compute_2d_covariance(cov_matrices, camera_space_points, tan_fov_x, tan_fov_
 
 
 if __name__ == '__main__':
+
+    torch.set_num_threads(12)
     
     scenes, cam_info = read_scene(path_to_scene='data/bonsai')
     fx, fy, cx, cy  = cam_info[1].params
@@ -285,6 +288,8 @@ if __name__ == '__main__':
     # TODO: might wanna add back last_pos to limit the number of gaussians that get backpropagated
     last_pos = torch.zeros((int(width), int(height)))
 
+    det_inv = 1 / (projected_covariances[:,0,0]*projected_covariances[:,1,1] - projected_covariances[:,1,0]*projected_covariances[:,0,1])
+
 
     # TODO: remove from the for loop everything that can be frontloaded
     for bbox_index, bbox in enumerate(tqdm.tqdm(rounded_bboxes)):
@@ -293,32 +298,32 @@ if __name__ == '__main__':
             continue
         
         # Clamping since it has to fit in the screen
-        x_grid = torch.clamp(torch.arange(bbox[0], bbox[2]), 0, width-1)
-        y_grid = torch.clamp(torch.arange(bbox[1], bbox[3]), 0, height-1)
+        x_grid = torch.clamp(torch.arange(bbox[0]*BLOCK_SIZE, bbox[2]*BLOCK_SIZE), 0, width-1)
+        y_grid = torch.clamp(torch.arange(bbox[1]*BLOCK_SIZE, bbox[3]*BLOCK_SIZE), 0, height-1)
         mesh_x, mesh_y = torch.meshgrid(x_grid, y_grid, indexing='ij')
         mesh = torch.stack([mesh_x, mesh_y], dim=-1).view(-1, 2)
 
         current_pos = last_pos[mesh[:,0], mesh[:,1]]
 
-        dist_to_mean = mesh - screen_means[bbox_index]
+        dist_to_mean = screen_means[bbox_index] - mesh
 
         # { float(cov[0][0]), float(cov[0][1]), float(cov[1][1]) }
         #  cov.z * det_inv, -cov.y * det_inv, cov.x * det_inv 
 
-        det_inv = 1 / (projected_covariances[bbox_index,0,0]*projected_covariances[bbox_index,1,1] - projected_covariances[bbox_index,1,0]*projected_covariances[bbox_index,0,1])
+        sigma_x = projected_covariances[bbox_index,1,1] * det_inv[bbox_index]
+        sigma_y = -projected_covariances[bbox_index,0,1] * det_inv[bbox_index]
+        sigma_x_y = projected_covariances[bbox_index,0,0] * det_inv[bbox_index]
 
-        sigma_x = projected_covariances[bbox_index,1,1] * det_inv
-        sigma_y = -projected_covariances[bbox_index,0,1] * det_inv
-        sigma_x_y = projected_covariances[bbox_index,0,0] * det_inv
+        # power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
 
         # gaussian_density = (1/det[bbox_index])*(0.5*(sigma_x)*(dist_to_mean[:,1]**2) + 0.5*(sigma_y)*(dist_to_mean[:,0]**2) - sigma_x_y*dist_to_mean[:,0]*dist_to_mean[:,1])
-        gaussian_density = -(0.5*(sigma_x)*(dist_to_mean[:,0]*dist_to_mean[:,0]) + 0.5*(sigma_y)*(dist_to_mean[:,1]*dist_to_mean[:,1]) - sigma_x_y*dist_to_mean[:,0]*dist_to_mean[:,1])
+        gaussian_density = -0.5*(sigma_x*(dist_to_mean[:,0]**2) + sigma_y*(dist_to_mean[:,1]**2)) - sigma_x_y*dist_to_mean[:,0]*dist_to_mean[:,1]
 
         only_pos = gaussian_density >= 0
 
-        alpha = torch.clamp(opacity[bbox_index]*torch.exp(gaussian_density), 0.0, 0.99).float()
+        alpha = torch.min(opacity[bbox_index]*torch.exp(gaussian_density), torch.tensor([0.99])).float()
         # TODO: we're hardcoding alpha here
-        alpha = torch.ones(alpha.shape)*0.2
+        # alpha = torch.ones(alpha.shape)*0.8
 
         # For numerical stability, we ignore 
         valid = (alpha > 1/255) & only_pos
