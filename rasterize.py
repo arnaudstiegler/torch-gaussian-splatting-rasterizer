@@ -51,7 +51,7 @@ def get_covariance_matrix_from_mesh(mesh: PlyElement):
     
     # Learned quaternions do not guarantee a unit norm
     unit_quaternions = torch.nn.functional.normalize(rotations, p=2.0, dim = 0)
-    rotation_matrices = quaternion_to_rotation_matrix(unit_quaternions).reshape(rotations.shape[-1], 3, 3)
+    rotation_matrices = quaternion_to_rotation_matrix(unit_quaternions).permute(2,0,1)
     scale_matrices = torch.zeros((scales.shape[-1], 3, 3))
     indices = torch.arange(3)
     scale_matrices[:, indices, indices] = scales.T
@@ -127,13 +127,21 @@ def compute_covering_bbox(screen_means: torch.Tensor, projected_covariances: tor
 
     max_spread = torch.ceil(GAUSSIAN_SPREAD*torch.sqrt(torch.max(torch.stack([lambda1, lambda2], dim=-1), dim=-1).values))
 
-    bboxes = torch.stack([
-        torch.clamp((screen_means[:,0] - (max_spread)) / BLOCK_SIZE, 0, width-1),
-        torch.clamp((screen_means[:,1] - (max_spread)) / BLOCK_SIZE, 0, height-1),
-        torch.clamp((screen_means[:,0] + (max_spread + BLOCK_SIZE - 1)) / BLOCK_SIZE, 0, width-1),
-        torch.clamp((screen_means[:,1] + (max_spread + BLOCK_SIZE - 1)) / BLOCK_SIZE, 0, height-1)
-        ], dim=-1)
+    import ipdb; ipdb.set_trace()
 
+    # bboxes = torch.stack([
+    #     torch.clamp((screen_means[:,0] - (max_spread)) / BLOCK_SIZE, 0, width-1),
+    #     torch.clamp((screen_means[:,1] - (max_spread)) / BLOCK_SIZE, 0, height-1),
+    #     torch.clamp((screen_means[:,0] + (max_spread + BLOCK_SIZE - 1)) / BLOCK_SIZE, 0, width-1),
+    #     torch.clamp((screen_means[:,1] + (max_spread + BLOCK_SIZE - 1)) / BLOCK_SIZE, 0, height-1)
+    #     ], dim=-1)
+
+    bboxes = torch.stack([
+        torch.clamp(screen_means[:,0] - max_spread, 0, width-1),
+        torch.clamp(screen_means[:,1] - max_spread, 0, height-1),
+        torch.clamp(screen_means[:,0] + max_spread, 0, width-1),
+        torch.clamp(screen_means[:,1] + max_spread, 0, height-1),
+    ], dim=-1)
     # Clamp again for gaussians that spread outside of the screen
     rounded_bboxes = torch.ceil(bboxes).to(int)
     return rounded_bboxes
@@ -143,7 +151,9 @@ def compute_2d_covariance(cov_matrices, camera_space_points, tan_fov_x, tan_fov_
     limx = torch.tensor([1.3 * tan_fov_x])
     limy = torch.tensor([1.3 * tan_fov_y])
 
-    focal_x, focal_y = focals
+    # TODO: this should be fixed upstream
+    # TODO: Somehow width and height are twice what they should be also
+    focal_x, focal_y = focals / 2
 
     txtz = camera_space_points[:,0] / camera_space_points[:,2]
     tytz = camera_space_points[:,1] / camera_space_points[:,2]
@@ -156,9 +166,9 @@ def compute_2d_covariance(cov_matrices, camera_space_points, tan_fov_x, tan_fov_
     J[:,1,1] = focal_y / camera_space_points[:,2]
     J[:,1,2] = -(focal_y * ty) / (camera_space_points[:,2] * camera_space_points[:,2])
 
-    W = world_to_camera[:-1, :-1]
+    W = world_to_camera[:-1, :-1].T
 
-    T = W @ J
+    T = torch.bmm(W.expand(J.shape[0], 3,3).transpose(2,1), J.transpose(2,1)).transpose(2,1)
 
     vrk = torch.zeros((camera_space_points.shape[0], 3,3))
     vrk[:,0,0] = cov_matrices[:,0,0]
@@ -171,7 +181,7 @@ def compute_2d_covariance(cov_matrices, camera_space_points, tan_fov_x, tan_fov_
     vrk[:,2,1] = cov_matrices[:,1,2]
     vrk[:,2,2] = cov_matrices[:,2,2]
 
-    proj_cov = T.permute(0,2,1) * vrk.permute(0,2,1) * T
+    proj_cov = T @ vrk  @ T.transpose(2,1)
 
     # Apply low-pass filter: every Gaussian should be at least
     # one pixel wide/high. Discard 3rd row and column.
@@ -224,7 +234,7 @@ if __name__ == '__main__':
     width = cam_info[1].width
     height = cam_info[1].height
     
-    scene = scenes[50]
+    scene = scenes[2]
     qvec = torch.tensor(scene.qvec)
     tvec = torch.tensor(scene.tvec)
 
@@ -239,18 +249,18 @@ if __name__ == '__main__':
     fov_y = 2*np.arctan(cam_info[1].height / (2*fy))
     tan_fov_x = math.tan(fov_x * 0.5)
     tan_fov_y = math.tan(fov_y * 0.5)
+
     projection_matrix = get_projection_matrix(fov_x, fov_y).transpose(0,1)
 
     full_proj_transform = (world_to_camera.unsqueeze(0).bmm(projection_matrix.unsqueeze(0))).squeeze(0)
 
     colors = read_color_components(plydata)
 
-    # TODO: double-check how this is computed
     camera_space_gaussian_means = project_to_camera_space(gaussian_means, world_to_camera)
 
     # TODO: degree 2 and 3 buggy
     # TODO: redefine cam center using the camera projection matrix?
-    rgb = sh_to_rgb(gaussian_means, colors, tvec, degree=2)
+    rgb = sh_to_rgb(gaussian_means, colors, tvec, degree=0)
 
 
     # This is new, and exactly based on what the paper is doing
@@ -265,18 +275,20 @@ if __name__ == '__main__':
 
     new_filter = screen_width_filtering & screen_height_filtering
 
+    projected_covariances = compute_2d_covariance(get_covariance_matrix_from_mesh(plydata).float(), camera_space_gaussian_means, tan_fov_x, tan_fov_y, focals, world_to_camera)
+
+    screen_means = p_proj[:, :2]*np.array([width//2, height//2]) + np.array([width//2, height//2])
+    import ipdb; ipdb.set_trace()
+    ex = ((p_proj[:,:2] + 1.0) * np.array([width, height]) - 1.0)/2
+
+    rounded_bboxes = compute_covering_bbox(screen_means, projected_covariances, width, height)
+    # projected_covariances = torch.stack([torch.eye(3)*20 for n in range(new_cov.shape[0])])
+    # projected_covariances = projected_covariances[new_filter]
+    projected_covariances = projected_covariances[new_filter]
     rgb = rgb[new_filter]
     gaussian_depths = camera_space_gaussian_means[:, -1][new_filter]
     opacity = opacity[new_filter]
     p_proj = p_proj[new_filter]
-
-    new_cov = compute_2d_covariance(get_covariance_matrix_from_mesh(plydata).float(), camera_space_gaussian_means, tan_fov_x, tan_fov_y, focals, world_to_camera)
-    # projected_covariances = torch.stack([torch.eye(3)*20 for n in range(new_cov.shape[0])])
-    # projected_covariances = projected_covariances[new_filter]
-    projected_covariances = new_cov[new_filter]
-
-    screen_means = p_proj[:, :2]*np.array([width//2, height//2]) + np.array([width//2, height//2])
-    rounded_bboxes = compute_covering_bbox(screen_means, projected_covariances, width, height)
 
     # TODO: unsure what depth to use here
     sorted_indices = torch.sort(-points[:,2]).indices
@@ -290,7 +302,6 @@ if __name__ == '__main__':
 
     det_inv = 1 / (projected_covariances[:,0,0]*projected_covariances[:,1,1] - projected_covariances[:,1,0]*projected_covariances[:,0,1])
 
-
     # TODO: remove from the for loop everything that can be frontloaded
     for bbox_index, bbox in enumerate(tqdm.tqdm(rounded_bboxes)):
         if (bbox[2] - bbox[0])*(bbox[3] - bbox[1]) == 0:
@@ -298,8 +309,11 @@ if __name__ == '__main__':
             continue
         
         # Clamping since it has to fit in the screen
-        x_grid = torch.clamp(torch.arange(bbox[0]*BLOCK_SIZE, bbox[2]*BLOCK_SIZE), 0, width-1)
-        y_grid = torch.clamp(torch.arange(bbox[1]*BLOCK_SIZE, bbox[3]*BLOCK_SIZE), 0, height-1)
+        # x_grid = torch.clamp(torch.arange(bbox[0]*BLOCK_SIZE, bbox[2]*BLOCK_SIZE), 0, width-1)
+        # y_grid = torch.clamp(torch.arange(bbox[1]*BLOCK_SIZE, bbox[3]*BLOCK_SIZE), 0, height-1)
+        x_grid = torch.clamp(torch.arange(bbox[0], bbox[2]), 0, width-1)
+        y_grid = torch.clamp(torch.arange(bbox[1], bbox[3]), 0, height-1)
+        
         mesh_x, mesh_y = torch.meshgrid(x_grid, y_grid, indexing='ij')
         mesh = torch.stack([mesh_x, mesh_y], dim=-1).view(-1, 2)
 

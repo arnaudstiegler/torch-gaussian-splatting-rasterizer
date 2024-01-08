@@ -1,0 +1,19 @@
+# Checklist
+- view matrix equal
+- projection matrix equal
+- 3D covariance matrices are equal
+- 3D gaussian coordinates are equal
+- 2D projected gaussians ("p_proj") are correct
+- In compute2d covariances:
+    - J matrix is equal
+    - blablabla
+- 2D covariances are equal now
+- max_spread (from the bboxes computation) is on par
+- screenspace coordinates are different (apparently because my height and width is twice the one from the repo)
+
+
+
+# Expected value for first 2 2D covariances
+preproc[0] = [1.0728, -1.2140, 5.2402]
+preproc[1] = [135.9209, 66.8127, 43.2185]
+preproc[2] = [0.6305, 0.1136, 1.1046]
