@@ -9,7 +9,12 @@
     - blablabla
 - 2D covariances are equal now
 - max_spread (from the bboxes computation) is on par
-- screenspace coordinates are different (apparently because my height and width is twice the one from the repo)
+- screenspace coordinates are the same
+- bboxes are the same
+- opacity is the same
+- conic values are the same
+- Still a problem on the filtering
+- + the screen prints are done on a block level (i.e you don't do pixel by pixel)
 
 
 

@@ -14,6 +14,7 @@ import os
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 import math
+from PIL import Image
 
 logger = logging.Logger(__name__)
 
@@ -127,23 +128,21 @@ def compute_covering_bbox(screen_means: torch.Tensor, projected_covariances: tor
 
     max_spread = torch.ceil(GAUSSIAN_SPREAD*torch.sqrt(torch.max(torch.stack([lambda1, lambda2], dim=-1), dim=-1).values))
 
-    import ipdb; ipdb.set_trace()
+    bboxes = torch.stack([
+        torch.clamp((screen_means[:,0] - (max_spread)) / BLOCK_SIZE, 0, width-1),
+        torch.clamp((screen_means[:,1] - (max_spread)) / BLOCK_SIZE, 0, height-1),
+        torch.clamp((screen_means[:,0] + (max_spread + BLOCK_SIZE - 1)) / BLOCK_SIZE, 0, width-1),
+        torch.clamp((screen_means[:,1] + (max_spread + BLOCK_SIZE - 1)) / BLOCK_SIZE, 0, height-1)
+        ], dim=-1)
 
     # bboxes = torch.stack([
-    #     torch.clamp((screen_means[:,0] - (max_spread)) / BLOCK_SIZE, 0, width-1),
-    #     torch.clamp((screen_means[:,1] - (max_spread)) / BLOCK_SIZE, 0, height-1),
-    #     torch.clamp((screen_means[:,0] + (max_spread + BLOCK_SIZE - 1)) / BLOCK_SIZE, 0, width-1),
-    #     torch.clamp((screen_means[:,1] + (max_spread + BLOCK_SIZE - 1)) / BLOCK_SIZE, 0, height-1)
-    #     ], dim=-1)
-
-    bboxes = torch.stack([
-        torch.clamp(screen_means[:,0] - max_spread, 0, width-1),
-        torch.clamp(screen_means[:,1] - max_spread, 0, height-1),
-        torch.clamp(screen_means[:,0] + max_spread, 0, width-1),
-        torch.clamp(screen_means[:,1] + max_spread, 0, height-1),
-    ], dim=-1)
+    #     torch.clamp(screen_means[:,0] - max_spread, 0, width-1),
+    #     torch.clamp(screen_means[:,1] - max_spread, 0, height-1),
+    #     torch.clamp(screen_means[:,0] + max_spread, 0, width-1),
+    #     torch.clamp(screen_means[:,1] + max_spread, 0, height-1),
+    # ], dim=-1)
     # Clamp again for gaussians that spread outside of the screen
-    rounded_bboxes = torch.ceil(bboxes).to(int)
+    rounded_bboxes = torch.floor(bboxes).to(int)
     return rounded_bboxes
 
 
@@ -229,12 +228,17 @@ if __name__ == '__main__':
     torch.set_num_threads(12)
     
     scenes, cam_info = read_scene(path_to_scene='data/bonsai')
+    scene = scenes[2]
+
+    # Loading the ground truth image
+    # images_{scale_fraction} i.e if 2, image has been shrunk by a factor 2
+    gt_img_path = os.path.join('data/bonsai/images_2', scene.name)
+    img = Image.open(gt_img_path)
+
     fx, fy, cx, cy  = cam_info[1].params
     focals = np.array([fx, fy])
-    width = cam_info[1].width
-    height = cam_info[1].height
+    width, height = img.size
     
-    scene = scenes[2]
     qvec = torch.tensor(scene.qvec)
     tvec = torch.tensor(scene.tvec)
 
@@ -266,6 +270,9 @@ if __name__ == '__main__':
     # This is new, and exactly based on what the paper is doing
     points = gaussian_means @ full_proj_transform[:3,:] + full_proj_transform[-1,:]
 
+    # Frustum culling
+    points[points[:,-1] < 0.2] = 0.0
+
     p_w = 1.0 / (points[:,-1]+ 0.0000001)
     p_proj = points[:,:-1] * p_w[:, None]
     
@@ -277,18 +284,16 @@ if __name__ == '__main__':
 
     projected_covariances = compute_2d_covariance(get_covariance_matrix_from_mesh(plydata).float(), camera_space_gaussian_means, tan_fov_x, tan_fov_y, focals, world_to_camera)
 
-    screen_means = p_proj[:, :2]*np.array([width//2, height//2]) + np.array([width//2, height//2])
-    import ipdb; ipdb.set_trace()
-    ex = ((p_proj[:,:2] + 1.0) * np.array([width, height]) - 1.0)/2
+    screen_means = ((p_proj[:,:2] + 1.0) * torch.tensor([width, height]) - 1.0)/2
 
     rounded_bboxes = compute_covering_bbox(screen_means, projected_covariances, width, height)
     # projected_covariances = torch.stack([torch.eye(3)*20 for n in range(new_cov.shape[0])])
     # projected_covariances = projected_covariances[new_filter]
-    projected_covariances = projected_covariances[new_filter]
-    rgb = rgb[new_filter]
-    gaussian_depths = camera_space_gaussian_means[:, -1][new_filter]
-    opacity = opacity[new_filter]
-    p_proj = p_proj[new_filter]
+    # projected_covariances = projected_covariances[new_filter]
+    # rgb = rgb[new_filter]
+    # gaussian_depths = camera_space_gaussian_means[:, -1][new_filter]
+    # opacity = opacity[new_filter]
+    # p_proj = p_proj[new_filter]
 
     # TODO: unsure what depth to use here
     sorted_indices = torch.sort(-points[:,2]).indices
@@ -300,29 +305,33 @@ if __name__ == '__main__':
     # TODO: might wanna add back last_pos to limit the number of gaussians that get backpropagated
     last_pos = torch.zeros((int(width), int(height)))
 
+    # Technically, could be a problem if equal to 0
     det_inv = 1 / (projected_covariances[:,0,0]*projected_covariances[:,1,1] - projected_covariances[:,1,0]*projected_covariances[:,0,1])
 
     # TODO: remove from the for loop everything that can be frontloaded
     for bbox_index, bbox in enumerate(tqdm.tqdm(rounded_bboxes)):
-        if (bbox[2] - bbox[0])*(bbox[3] - bbox[1]) == 0:
+        # TODO: remove
+        x_min = torch.clamp(bbox[0]*BLOCK_SIZE, 0, width-1)
+        y_min = torch.clamp(bbox[1]*BLOCK_SIZE, 0, height-1)
+        x_max = torch.clamp(bbox[2]*BLOCK_SIZE, 0, width-1)
+        y_max = torch.clamp(bbox[3]*BLOCK_SIZE, 0, height-1)
+
+        if (x_max - x_min)*(y_max - y_min) == 0:
             # This means the gaussian doesn't cover any pixel
             continue
         
         # Clamping since it has to fit in the screen
         # x_grid = torch.clamp(torch.arange(bbox[0]*BLOCK_SIZE, bbox[2]*BLOCK_SIZE), 0, width-1)
         # y_grid = torch.clamp(torch.arange(bbox[1]*BLOCK_SIZE, bbox[3]*BLOCK_SIZE), 0, height-1)
-        x_grid = torch.clamp(torch.arange(bbox[0], bbox[2]), 0, width-1)
-        y_grid = torch.clamp(torch.arange(bbox[1], bbox[3]), 0, height-1)
-        
+        x_grid = torch.clamp(torch.arange(x_min, x_max), 0, width-1)
+        y_grid = torch.clamp(torch.arange(y_min, y_max), 0, height-1)
+
         mesh_x, mesh_y = torch.meshgrid(x_grid, y_grid, indexing='ij')
         mesh = torch.stack([mesh_x, mesh_y], dim=-1).view(-1, 2)
 
         current_pos = last_pos[mesh[:,0], mesh[:,1]]
 
         dist_to_mean = screen_means[bbox_index] - mesh
-
-        # { float(cov[0][0]), float(cov[0][1]), float(cov[1][1]) }
-        #  cov.z * det_inv, -cov.y * det_inv, cov.x * det_inv 
 
         sigma_x = projected_covariances[bbox_index,1,1] * det_inv[bbox_index]
         sigma_y = -projected_covariances[bbox_index,0,1] * det_inv[bbox_index]
@@ -333,7 +342,7 @@ if __name__ == '__main__':
         # gaussian_density = (1/det[bbox_index])*(0.5*(sigma_x)*(dist_to_mean[:,1]**2) + 0.5*(sigma_y)*(dist_to_mean[:,0]**2) - sigma_x_y*dist_to_mean[:,0]*dist_to_mean[:,1])
         gaussian_density = -0.5*(sigma_x*(dist_to_mean[:,0]**2) + sigma_y*(dist_to_mean[:,1]**2)) - sigma_x_y*dist_to_mean[:,0]*dist_to_mean[:,1]
 
-        only_pos = gaussian_density >= 0
+        only_pos = gaussian_density <= 0
 
         alpha = torch.min(opacity[bbox_index]*torch.exp(gaussian_density), torch.tensor([0.99])).float()
         # TODO: we're hardcoding alpha here
@@ -358,7 +367,7 @@ if __name__ == '__main__':
 
     # Display the second image
     plt.subplot(2, 1, 2)  # 2 rows, 1 column, 2nd subplot
-    plt.imshow(mpimg.imread(os.path.join('data/bonsai/images', scene.name)))
+    plt.imshow(mpimg.imread(gt_img_path))
     plt.title('Reference Image')
 
     plt.show()
