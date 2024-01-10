@@ -308,6 +308,19 @@ if __name__ == '__main__':
     # Technically, could be a problem if equal to 0
     det_inv = 1 / (projected_covariances[:,0,0]*projected_covariances[:,1,1] - projected_covariances[:,1,0]*projected_covariances[:,0,1])
 
+    device = 'cuda'
+    rounded_bboxes = rounded_bboxes.to(device)
+    screen_means = screen_means.to(device)
+    projected_covariances = projected_covariances.to(device)
+    det_inv = det_inv.to(device)
+    screen = screen.to(device)
+    rgb = rgb.to(device)
+    opacity_buffer = opacity_buffer.to(device)
+
+    sigma_x = projected_covariances[:,1,1] * det_inv[:]
+    sigma_y = -projected_covariances[:,0,1] * det_inv[:]
+    sigma_x_y = projected_covariances[:,0,0] * det_inv[:]
+
     # TODO: remove from the for loop everything that can be frontloaded
     for bbox_index, bbox in enumerate(tqdm.tqdm(rounded_bboxes)):
         # TODO: remove
@@ -327,24 +340,20 @@ if __name__ == '__main__':
         y_grid = torch.clamp(torch.arange(y_min, y_max), 0, height-1)
 
         mesh_x, mesh_y = torch.meshgrid(x_grid, y_grid, indexing='ij')
-        mesh = torch.stack([mesh_x, mesh_y], dim=-1).view(-1, 2)
+        mesh = torch.stack([mesh_x, mesh_y], dim=-1).view(-1, 2).to(device)
 
-        current_pos = last_pos[mesh[:,0], mesh[:,1]]
+        # current_pos = last_pos[mesh[:,0], mesh[:,1]]
 
         dist_to_mean = screen_means[bbox_index] - mesh
-
-        sigma_x = projected_covariances[bbox_index,1,1] * det_inv[bbox_index]
-        sigma_y = -projected_covariances[bbox_index,0,1] * det_inv[bbox_index]
-        sigma_x_y = projected_covariances[bbox_index,0,0] * det_inv[bbox_index]
 
         # power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
 
         # gaussian_density = (1/det[bbox_index])*(0.5*(sigma_x)*(dist_to_mean[:,1]**2) + 0.5*(sigma_y)*(dist_to_mean[:,0]**2) - sigma_x_y*dist_to_mean[:,0]*dist_to_mean[:,1])
-        gaussian_density = -0.5*(sigma_x*(dist_to_mean[:,0]**2) + sigma_y*(dist_to_mean[:,1]**2)) - sigma_x_y*dist_to_mean[:,0]*dist_to_mean[:,1]
+        gaussian_density = -0.5*(sigma_x[bbox_index]*(dist_to_mean[:,0]**2) + sigma_y[bbox_index]*(dist_to_mean[:,1]**2)) - sigma_x_y[bbox_index]*dist_to_mean[:,0]*dist_to_mean[:,1]
 
         only_pos = gaussian_density <= 0
 
-        alpha = torch.min(opacity[bbox_index]*torch.exp(gaussian_density), torch.tensor([0.99])).float()
+        alpha = torch.min(opacity[bbox_index]*torch.exp(gaussian_density), torch.tensor([0.99], device=device)).float()
         # TODO: we're hardcoding alpha here
         # alpha = torch.ones(alpha.shape)*0.8
 
@@ -362,7 +371,7 @@ if __name__ == '__main__':
     plt.figure(figsize=(10, 10))
 
     plt.subplot(2, 1, 1)  # 2 rows, 1 column1, 1st subplot
-    plt.imshow(screen[:, :, :3].transpose(1,0))
+    plt.imshow(screen[:, :, :3].transpose(1,0).cpu())
     plt.title('Reconstructed Image')
 
     # Display the second image
