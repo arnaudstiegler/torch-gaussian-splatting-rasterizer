@@ -26,15 +26,14 @@ SH_C3 = [
 ]
 
 
-def sh_to_rgb(xyz, sh, cam_center, degree=0):
+def sh_to_rgb(xyz, sh, world_view_transform, degree=0):
     '''
     Formula to retrieve RGB colors from polynomial spherical harmonics 
     '''
 
-    # TODO: check how the cam center is obtained -> camera_center = self.world_view_transform.inverse()[3, :3]
-
+    cam_center = world_view_transform.inverse()[3, :3]
     dir = xyz - cam_center
-    dir = dir / torch.norm(cam_center)
+    dir = dir / torch.norm(dir)
 
     x = dir[:,0].view(-1, 1)
     y = dir[:,1].view(-1, 1)
@@ -73,21 +72,3 @@ def sh_to_rgb(xyz, sh, cam_center, degree=0):
     colors = torch.clamp(colors, 0, 1)
 
     return colors
-
-
-	# 		if (deg > 2)
-	# 		{
-	# 			result = result +
-	# 				SH_C3[0] * y * (3.0f * xx - yy) * sh[9] +
-	# 				SH_C3[1] * xy * z * sh[10] +
-	# 				SH_C3[2] * y * (4.0f * zz - xx - yy) * sh[11] +
-	# 				SH_C3[3] * z * (2.0f * zz - 3.0f * xx - 3.0f * yy) * sh[12] +
-	# 				SH_C3[4] * x * (4.0f * zz - xx - yy) * sh[13] +
-	# 				SH_C3[5] * z * (xx - yy) * sh[14] +
-	# 				SH_C3[6] * x * (xx - 3.0f * yy) * sh[15];
-	# 		}
-	# 	}
-	# }
-	# result += 0.5f;
-
-    # return colors

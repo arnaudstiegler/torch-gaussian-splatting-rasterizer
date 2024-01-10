@@ -16,6 +16,9 @@
 - Still a problem on the filtering
 - + the screen prints are done on a block level (i.e you don't do pixel by pixel)
 
+TODO -> check the blending (specifically the gaussian density and the distance between pixel and center)
+Looks like either the spread or blending is wrong
+
 
 
 # Expected value for first 2 2D covariances

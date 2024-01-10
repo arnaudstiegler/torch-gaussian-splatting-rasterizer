@@ -23,6 +23,8 @@ Z_FAR = 100.0
 Z_NEAR = 0.01
 GAUSSIAN_SPREAD = 3
 BLOCK_SIZE = 16
+MAX_GAUSSIAN_DENSITY = 0.99
+MIN_ALPHA = 1/255
 
 def quaternion_to_rotation_matrix(quaternion: np.ndarray) -> np.ndarray:
     '''
@@ -189,38 +191,30 @@ def compute_2d_covariance(cov_matrices, camera_space_points, tan_fov_x, tan_fov_
 
     return proj_cov[:, :2,:2]
 
+def blend_gaussian(bbox_index, x_max, x_min, y_max, y_min, screen, screen_means, sigma_x, sigma_y, sigma_x_y, rgb, opacity_buffer):
+    x_grid = torch.arange(x_min[bbox_index], x_max[bbox_index])
+    y_grid = torch.arange(y_min[bbox_index], y_max[bbox_index])
 
-# def projection_old_way():
-    # See in_frustum function in `submodules/diff-gaussian-rasterization/cuda_rasterizer/auxiliary.h`
-    # gaussian_filtering = project_to_camera_space(gaussian_means, world_to_camera)[:,-1] > 0.2
+    mesh_x, mesh_y = torch.meshgrid(x_grid, y_grid, indexing='ij')
+    mesh = torch.stack([mesh_x, mesh_y], dim=-1).view(-1, 2).to(device)
 
-    # Perspective project, i.e project on the screen
-    # P'(x) = (P(x)/P(z))*fx
-    # TODO: perspective project should use fov and focals
-    # projected_points = (camera_space_gaussian_means[:, :2] / camera_space_gaussian_means[:, -1][:, None])*focals  # The None allows to broadcast the division
+    dist_to_mean = screen_means[bbox_index] - mesh
+    gaussian_density = -0.5*(sigma_x[bbox_index]*(dist_to_mean[:,0]**2) + sigma_y[bbox_index]*(dist_to_mean[:,1]**2)) - sigma_x_y[bbox_index]*dist_to_mean[:,0]*dist_to_mean[:,1]
 
-    # For the covariance, we only use the rotation/scale part of the transformation but not the translation
-    # Also note that the perspective-divide does not apply in this scenario
-    # projected_covariances = get_covariance_matrix_from_mesh(plydata).float() @ world_to_camera[:3, :3]
+    only_pos = gaussian_density <= 0
 
-    # Filter points outside of the screen (shouldn't this be done through the frustum culling???)
-    # screen_width_filtering = np.abs(projected_points[:,0])<= (width // 2)
-    # screen_height_filtering = np.abs(projected_points[:,1])<= (height // 2)
+    alpha = torch.min(opacity[bbox_index]*torch.exp(gaussian_density), torch.tensor([MAX_GAUSSIAN_DENSITY], device=device)).float()
 
-    # depth_filter = camera_space_gaussian_means[:, -1] > 0.0
-    # full_filter = gaussian_filtering & screen_width_filtering & screen_height_filtering & depth_filter
+    # For numerical stability, we ignore 
+    valid = (alpha > MIN_ALPHA) & only_pos
+    valid_mesh = mesh[valid, :]
 
-    # projected_points = projected_points[full_filter]
-    # gaussian_depths = camera_space_gaussian_means[:, -1][full_filter]
-    # rgb = rgb[full_filter]
-    # opacity = opacity[full_filter]
-    # projected_covariances = projected_covariances[full_filter]
+    screen[valid_mesh[:, 0], valid_mesh[:,1], :] += alpha[valid, None]*rgb[bbox_index]*opacity_buffer[valid_mesh[:, 0], valid_mesh[:,1], None]
+    
+    # Update buffer
+    opacity_buffer[valid_mesh[:, 0], valid_mesh[:,1]] = opacity_buffer[valid_mesh[:, 0], valid_mesh[:,1]] * (1-alpha[valid])
 
-    # Dummy covariance
-    # projected_covariances = torch.stack([torch.eye(3)*30 for n in range(projected_covariances.shape[0])])
-
-    # # Project to NDC
-    # ndc_means = projected_points / torch.tensor([width/2, height/2])[None, :]
+    return screen
 
 
 if __name__ == '__main__':
@@ -264,14 +258,17 @@ if __name__ == '__main__':
 
     # TODO: degree 2 and 3 buggy
     # TODO: redefine cam center using the camera projection matrix?
-    rgb = sh_to_rgb(gaussian_means, colors, tvec, degree=0)
+    rgb = sh_to_rgb(gaussian_means, colors, world_to_camera, degree=3)
 
+    # Computing only with the view matrix
+    p_view = gaussian_means @ world_to_camera[:3,:] + world_to_camera[-1,:]
 
     # This is new, and exactly based on what the paper is doing
     points = gaussian_means @ full_proj_transform[:3,:] + full_proj_transform[-1,:]
 
     # Frustum culling
-    points[points[:,-1] < 0.2] = 0.0
+    frustum_culling_filter = p_view[:,2] < 0.2
+    points[frustum_culling_filter] = 0.0
 
     p_w = 1.0 / (points[:,-1]+ 0.0000001)
     p_proj = points[:,:-1] * p_w[:, None]
@@ -283,20 +280,11 @@ if __name__ == '__main__':
     new_filter = screen_width_filtering & screen_height_filtering
 
     projected_covariances = compute_2d_covariance(get_covariance_matrix_from_mesh(plydata).float(), camera_space_gaussian_means, tan_fov_x, tan_fov_y, focals, world_to_camera)
+    projected_covariances[frustum_culling_filter] = 0.0
 
     screen_means = ((p_proj[:,:2] + 1.0) * torch.tensor([width, height]) - 1.0)/2
 
     rounded_bboxes = compute_covering_bbox(screen_means, projected_covariances, width, height)
-    # projected_covariances = torch.stack([torch.eye(3)*20 for n in range(new_cov.shape[0])])
-    # projected_covariances = projected_covariances[new_filter]
-    # projected_covariances = projected_covariances[new_filter]
-    # rgb = rgb[new_filter]
-    # gaussian_depths = camera_space_gaussian_means[:, -1][new_filter]
-    # opacity = opacity[new_filter]
-    # p_proj = p_proj[new_filter]
-
-    # TODO: unsure what depth to use here
-    sorted_indices = torch.sort(-points[:,2]).indices
 
     # 4 -> (r, g, b, depth)
     screen = torch.zeros((int(width), int(height), 3)).float()
@@ -306,9 +294,10 @@ if __name__ == '__main__':
     last_pos = torch.zeros((int(width), int(height)))
 
     # Technically, could be a problem if equal to 0
+    # Doesn't happen in practice
     det_inv = 1 / (projected_covariances[:,0,0]*projected_covariances[:,1,1] - projected_covariances[:,1,0]*projected_covariances[:,0,1])
 
-    device = 'cuda'
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
     rounded_bboxes = rounded_bboxes.to(device)
     screen_means = screen_means.to(device)
     projected_covariances = projected_covariances.to(device)
@@ -321,51 +310,21 @@ if __name__ == '__main__':
     sigma_y = -projected_covariances[:,0,1] * det_inv[:]
     sigma_x_y = projected_covariances[:,0,0] * det_inv[:]
 
-    # TODO: remove from the for loop everything that can be frontloaded
-    for bbox_index, bbox in enumerate(tqdm.tqdm(rounded_bboxes)):
-        # TODO: remove
-        x_min = torch.clamp(bbox[0]*BLOCK_SIZE, 0, width-1)
-        y_min = torch.clamp(bbox[1]*BLOCK_SIZE, 0, height-1)
-        x_max = torch.clamp(bbox[2]*BLOCK_SIZE, 0, width-1)
-        y_max = torch.clamp(bbox[3]*BLOCK_SIZE, 0, height-1)
+    x_min = torch.clamp(rounded_bboxes[:, 0]*BLOCK_SIZE, 0, width-1)
+    y_min = torch.clamp(rounded_bboxes[:, 1]*BLOCK_SIZE, 0, height-1)
+    x_max = torch.clamp(rounded_bboxes[:, 2]*BLOCK_SIZE, 0, width-1)
+    y_max = torch.clamp(rounded_bboxes[:, 3]*BLOCK_SIZE, 0, height-1)
 
-        if (x_max - x_min)*(y_max - y_min) == 0:
+    depths = p_view[:,2]
+    sorted_gaussians = torch.sort(depths).indices
+
+    bbox_area = (x_max - x_min)*(y_max - y_min)
+
+    for gaussian_index in tqdm.tqdm(sorted_gaussians):
+        if bbox_area[gaussian_index] == 0:
             # This means the gaussian doesn't cover any pixel
             continue
-        
-        # Clamping since it has to fit in the screen
-        # x_grid = torch.clamp(torch.arange(bbox[0]*BLOCK_SIZE, bbox[2]*BLOCK_SIZE), 0, width-1)
-        # y_grid = torch.clamp(torch.arange(bbox[1]*BLOCK_SIZE, bbox[3]*BLOCK_SIZE), 0, height-1)
-        x_grid = torch.clamp(torch.arange(x_min, x_max), 0, width-1)
-        y_grid = torch.clamp(torch.arange(y_min, y_max), 0, height-1)
-
-        mesh_x, mesh_y = torch.meshgrid(x_grid, y_grid, indexing='ij')
-        mesh = torch.stack([mesh_x, mesh_y], dim=-1).view(-1, 2).to(device)
-
-        # current_pos = last_pos[mesh[:,0], mesh[:,1]]
-
-        dist_to_mean = screen_means[bbox_index] - mesh
-
-        # power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
-
-        # gaussian_density = (1/det[bbox_index])*(0.5*(sigma_x)*(dist_to_mean[:,1]**2) + 0.5*(sigma_y)*(dist_to_mean[:,0]**2) - sigma_x_y*dist_to_mean[:,0]*dist_to_mean[:,1])
-        gaussian_density = -0.5*(sigma_x[bbox_index]*(dist_to_mean[:,0]**2) + sigma_y[bbox_index]*(dist_to_mean[:,1]**2)) - sigma_x_y[bbox_index]*dist_to_mean[:,0]*dist_to_mean[:,1]
-
-        only_pos = gaussian_density <= 0
-
-        alpha = torch.min(opacity[bbox_index]*torch.exp(gaussian_density), torch.tensor([0.99], device=device)).float()
-        # TODO: we're hardcoding alpha here
-        # alpha = torch.ones(alpha.shape)*0.8
-
-        # For numerical stability, we ignore 
-        valid = (alpha > 1/255) & only_pos
-        valid_mesh = mesh[valid, :]
-
-        screen[valid_mesh[:, 0], valid_mesh[:,1], :] += alpha[valid, None]*rgb[bbox_index]*opacity_buffer[valid_mesh[:, 0], valid_mesh[:,1], None]
-        
-        # Update buffer and last position
-        opacity_buffer[valid_mesh[:, 0], valid_mesh[:,1]] = opacity_buffer[valid_mesh[:, 0], valid_mesh[:,1]] * (1-alpha[valid])
-        # last_pos[valid_mesh[:, 0], valid_mesh[:,1]] = last_pos[valid_mesh[:, 0], valid_mesh[:,1]] + 1
+        screen = blend_gaussian(gaussian_index, x_max, x_min, y_max, y_min, screen, screen_means, sigma_x, sigma_y, sigma_x_y, rgb, opacity_buffer)
  
     # Create a figure
     plt.figure(figsize=(10, 10))
