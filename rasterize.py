@@ -293,9 +293,9 @@ if __name__ == '__main__':
     # TODO: might wanna add back last_pos to limit the number of gaussians that get backpropagated
     last_pos = torch.zeros((int(width), int(height)))
 
-    # Technically, could be a problem if equal to 0
-    # Doesn't happen in practice
-    det_inv = 1 / (projected_covariances[:,0,0]*projected_covariances[:,1,1] - projected_covariances[:,1,0]*projected_covariances[:,0,1])
+    det = projected_covariances[:,0,0]*projected_covariances[:,1,1] - projected_covariances[:,1,0]*projected_covariances[:,0,1]
+    # det can underflow into 0, so have to zero-out the inverse of det as well
+    det_inv = torch.where(det==0, 0, 1/det)
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     rounded_bboxes = rounded_bboxes.to(device)
@@ -321,8 +321,9 @@ if __name__ == '__main__':
     bbox_area = (x_max - x_min)*(y_max - y_min)
 
     for gaussian_index in tqdm.tqdm(sorted_gaussians):
-        if bbox_area[gaussian_index] == 0:
+        if bbox_area[gaussian_index] == 0 or (sigma_x[gaussian_index] == 0 and sigma_y[gaussian_index]==0 and sigma_x_y[gaussian_index] == 0):
             # This means the gaussian doesn't cover any pixel
+            # TODO: what does it mean when the sigmas are equal to 0?
             continue
         screen = blend_gaussian(gaussian_index, x_max, x_min, y_max, y_min, screen, screen_means, sigma_x, sigma_y, sigma_x_y, rgb, opacity_buffer)
  

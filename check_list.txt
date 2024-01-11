@@ -19,6 +19,11 @@
 TODO -> check the blending (specifically the gaussian density and the distance between pixel and center)
 Looks like either the spread or blending is wrong
 
+There was an underflow on the sigmas, but that doesn't explain the current look of the rasterization
+Have to look into:
+- ordering
+- binning/chunking
+- densities/alphas values
 
 
 # Expected value for first 2 2D covariances
