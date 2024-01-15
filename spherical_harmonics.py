@@ -33,7 +33,7 @@ def sh_to_rgb(xyz, sh, world_view_transform, degree=0):
 
     cam_center = world_view_transform.inverse()[3, :3]
     dir = xyz - cam_center
-    dir = dir / torch.norm(dir)
+    dir = dir / torch.norm(dir,dim=1).unsqueeze(-1).expand(-1,3)
 
     x = dir[:,0].view(-1, 1)
     y = dir[:,1].view(-1, 1)

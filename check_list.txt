@@ -13,6 +13,7 @@
 - bboxes are the same
 - opacity is the same
 - conic values are the same
+- sh colors are the same
 - Still a problem on the filtering
 - + the screen prints are done on a block level (i.e you don't do pixel by pixel)
 

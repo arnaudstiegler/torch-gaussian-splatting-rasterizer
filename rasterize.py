@@ -256,8 +256,6 @@ if __name__ == '__main__':
 
     camera_space_gaussian_means = project_to_camera_space(gaussian_means, world_to_camera)
 
-    # TODO: degree 2 and 3 buggy
-    # TODO: redefine cam center using the camera projection matrix?
     rgb = sh_to_rgb(gaussian_means, colors, world_to_camera, degree=3)
 
     # Computing only with the view matrix
