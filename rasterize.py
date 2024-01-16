@@ -203,6 +203,8 @@ def blend_gaussian(bbox_index, x_max, x_min, y_max, y_min, screen, screen_means,
 
     only_pos = gaussian_density <= 0
 
+    # We want 741
+
     alpha = torch.min(opacity[bbox_index]*torch.exp(gaussian_density), torch.tensor([MAX_GAUSSIAN_DENSITY], device=device)).float()
 
     # For numerical stability, we ignore 
@@ -305,8 +307,8 @@ if __name__ == '__main__':
     opacity_buffer = opacity_buffer.to(device)
 
     sigma_x = projected_covariances[:,1,1] * det_inv[:]
-    sigma_y = -projected_covariances[:,0,1] * det_inv[:]
-    sigma_x_y = projected_covariances[:,0,0] * det_inv[:]
+    sigma_y = projected_covariances[:,0,0] * det_inv[:]
+    sigma_x_y = -projected_covariances[:,0,1] * det_inv[:]
 
     x_min = torch.clamp(rounded_bboxes[:, 0]*BLOCK_SIZE, 0, width-1)
     y_min = torch.clamp(rounded_bboxes[:, 1]*BLOCK_SIZE, 0, height-1)
