@@ -39,34 +39,14 @@ def quaternion_to_rotation_matrix(quaternion: np.ndarray) -> np.ndarray:
     z = quaternion[3, :]
     return torch.stack(
         [
-            torch.stack(
-                [
-                    1 - 2 * y ** 2 - 2 * z ** 2,
-                    2 * x * y - 2 * z * w_q,
-                    2 * x * z + 2 * y * w_q,
-                ]
-            ),
-            torch.stack(
-                [
-                    2 * x * y + 2 * z * w_q,
-                    1 - 2 * x ** 2 - 2 * z ** 2,
-                    2 * y * z - 2 * x * w_q,
-                ]
-            ),
-            torch.stack(
-                [
-                    2 * x * z - 2 * y * w_q,
-                    2 * y * z + 2 * x * w_q,
-                    1 - 2 * x ** 2 - 2 * y ** 2,
-                ]
-            ),
+            torch.stack([1 - 2 * y ** 2 - 2 * z ** 2, 2 * x * y - 2 * z * w_q, 2 * x * z + 2 * y * w_q,]),
+            torch.stack([2 * x * y + 2 * z * w_q, 1 - 2 * x ** 2 - 2 * z ** 2, 2 * y * z - 2 * x * w_q,]),
+            torch.stack([2 * x * z - 2 * y * w_q, 2 * y * z + 2 * x * w_q, 1 - 2 * x ** 2 - 2 * y ** 2,]),
         ]
     ).float()
 
 
-def project_to_camera_space(
-    gaussian_means: np.ndarray, world_to_camera: np.ndarray
-) -> np.ndarray:
+def project_to_camera_space(gaussian_means: np.ndarray, world_to_camera: np.ndarray) -> np.ndarray:
     # Note: @ is just a matmul
     # Here we project by; 1) applying the rotation, 2) adding the translation
 
@@ -75,15 +55,7 @@ def project_to_camera_space(
 
 def get_covariance_matrix_from_mesh(mesh: PlyElement):
     scales = torch.exp(
-        torch.tensor(
-            np.stack(
-                [
-                    mesh.elements[0]["scale_0"],
-                    mesh.elements[0]["scale_1"],
-                    mesh.elements[0]["scale_2"],
-                ]
-            )
-        )
+        torch.tensor(np.stack([mesh.elements[0]["scale_0"], mesh.elements[0]["scale_1"], mesh.elements[0]["scale_2"],]))
     )
     rotations = torch.tensor(
         np.stack(
@@ -108,9 +80,7 @@ def get_covariance_matrix_from_mesh(mesh: PlyElement):
     return M @ torch.permute(M, (0, 2, 1))
 
 
-def get_world_to_camera_matrix(
-    normalized_qvec: np.ndarray, tvec: np.ndarray
-) -> torch.Tensor:
+def get_world_to_camera_matrix(normalized_qvec: np.ndarray, tvec: np.ndarray) -> torch.Tensor:
     """
     The coordinates of the projection/camera center are given by -R^t * T, 
     where R^t is the inverse/transpose of the 3x3 rotation matrix composed from the quaternion 
@@ -173,10 +143,7 @@ def filter_view_frustum(gaussian_means: np.ndarray, fov_x: float, fov_y: float):
 
 
 def compute_covering_bbox(
-    screen_means: torch.Tensor,
-    projected_covariances: torch.Tensor,
-    width: float,
-    height: float,
+    screen_means: torch.Tensor, projected_covariances: torch.Tensor, width: float, height: float,
 ) -> torch.Tensor:
     det = (
         projected_covariances[:, 0, 0] * projected_covariances[:, 1, 1]
@@ -187,34 +154,19 @@ def compute_covering_bbox(
     # Have to clamp to 0 in case lambda is negative (no guarantee it is not)
     # To preven instabilities, we add the max
     # 0.1 is the value provided by the paper
-    lambda1 = trace / 2.0 + torch.sqrt(
-        torch.max((trace ** 2) / 4.0 - det, torch.tensor([0.1]))
-    )
-    lambda2 = trace / 2.0 - torch.sqrt(
-        torch.max((trace ** 2) / 4.0 - det, torch.tensor([0.1]))
-    )
+    lambda1 = trace / 2.0 + torch.sqrt(torch.max((trace ** 2) / 4.0 - det, torch.tensor([0.1], device=screen_means.device)))
+    lambda2 = trace / 2.0 - torch.sqrt(torch.max((trace ** 2) / 4.0 - det, torch.tensor([0.1], device=screen_means.device)))
 
     max_spread = torch.ceil(
-        GAUSSIAN_SPREAD
-        * torch.sqrt(torch.max(torch.stack([lambda1, lambda2], dim=-1), dim=-1).values)
+        GAUSSIAN_SPREAD * torch.sqrt(torch.max(torch.stack([lambda1, lambda2], dim=-1), dim=-1).values)
     )
 
     bboxes = torch.stack(
         [
             torch.clamp((screen_means[:, 0] - (max_spread)) / BLOCK_SIZE, 0, width - 1),
-            torch.clamp(
-                (screen_means[:, 1] - (max_spread)) / BLOCK_SIZE, 0, height - 1
-            ),
-            torch.clamp(
-                (screen_means[:, 0] + (max_spread + BLOCK_SIZE - 1)) / BLOCK_SIZE,
-                0,
-                width - 1,
-            ),
-            torch.clamp(
-                (screen_means[:, 1] + (max_spread + BLOCK_SIZE - 1)) / BLOCK_SIZE,
-                0,
-                height - 1,
-            ),
+            torch.clamp((screen_means[:, 1] - (max_spread)) / BLOCK_SIZE, 0, height - 1),
+            torch.clamp((screen_means[:, 0] + (max_spread + BLOCK_SIZE - 1)) / BLOCK_SIZE, 0, width - 1,),
+            torch.clamp((screen_means[:, 1] + (max_spread + BLOCK_SIZE - 1)) / BLOCK_SIZE, 0, height - 1,),
         ],
         dim=-1,
     )
@@ -230,11 +182,9 @@ def compute_covering_bbox(
     return rounded_bboxes
 
 
-def compute_2d_covariance(
-    cov_matrices, camera_space_points, tan_fov_x, tan_fov_y, focals, world_to_camera
-):
-    limx = torch.tensor([1.3 * tan_fov_x])
-    limy = torch.tensor([1.3 * tan_fov_y])
+def compute_2d_covariance(cov_matrices, camera_space_points, tan_fov_x, tan_fov_y, focals, world_to_camera):
+    limx = torch.tensor([1.3 * tan_fov_x], device=cov_matrices.device)
+    limy = torch.tensor([1.3 * tan_fov_y], device=cov_matrices.device)
 
     # TODO: this should be fixed upstream
     # TODO: Somehow width and height are twice what they should be also
@@ -245,23 +195,17 @@ def compute_2d_covariance(
     tx = torch.min(limx, torch.max(-limx, txtz)) * camera_space_points[:, 2]
     ty = torch.min(limy, torch.max(-limy, tytz)) * camera_space_points[:, 2]
 
-    J = torch.zeros((camera_space_points.shape[0], 3, 3))
+    J = torch.zeros((camera_space_points.shape[0], 3, 3), device=cov_matrices.device)
     J[:, 0, 0] = focal_x / camera_space_points[:, 2]
-    J[:, 0, 2] = -(focal_x * tx) / (
-        camera_space_points[:, 2] * camera_space_points[:, 2]
-    )
+    J[:, 0, 2] = -(focal_x * tx) / (camera_space_points[:, 2] * camera_space_points[:, 2])
     J[:, 1, 1] = focal_y / camera_space_points[:, 2]
-    J[:, 1, 2] = -(focal_y * ty) / (
-        camera_space_points[:, 2] * camera_space_points[:, 2]
-    )
+    J[:, 1, 2] = -(focal_y * ty) / (camera_space_points[:, 2] * camera_space_points[:, 2])
 
     W = world_to_camera[:-1, :-1].T
 
-    T = torch.bmm(
-        W.expand(J.shape[0], 3, 3).transpose(2, 1), J.transpose(2, 1)
-    ).transpose(2, 1)
+    T = torch.bmm(W.expand(J.shape[0], 3, 3).transpose(2, 1), J.transpose(2, 1)).transpose(2, 1)
 
-    vrk = torch.zeros((camera_space_points.shape[0], 3, 3))
+    vrk = torch.zeros((camera_space_points.shape[0], 3, 3), device=cov_matrices.device)
     vrk[:, 0, 0] = cov_matrices[:, 0, 0]
     vrk[:, 0, 1] = cov_matrices[:, 0, 1]
     vrk[:, 0, 2] = cov_matrices[:, 0, 2]
@@ -304,12 +248,9 @@ def blend_gaussian(
     mesh = torch.stack([mesh_x, mesh_y], dim=-1).view(-1, 2).to(screen_means.device)
 
     dist_to_mean = screen_means[bbox_index] - mesh
+
     gaussian_density = (
-        -0.5
-        * (
-            sigma_x[bbox_index] * (dist_to_mean[:, 0] ** 2)
-            + sigma_y[bbox_index] * (dist_to_mean[:, 1] ** 2)
-        )
+        -0.5 * (sigma_x[bbox_index] * (dist_to_mean[:, 0] ** 2) + sigma_y[bbox_index] * (dist_to_mean[:, 1] ** 2))
         - sigma_x_y[bbox_index] * dist_to_mean[:, 0] * dist_to_mean[:, 1]
     )
 
@@ -325,15 +266,13 @@ def blend_gaussian(
     valid_mesh = mesh[valid, :]
 
     screen[valid_mesh[:, 0], valid_mesh[:, 1], :] += (
-        alpha[valid, None]
-        * rgb[bbox_index]
-        * opacity_buffer[valid_mesh[:, 0], valid_mesh[:, 1], None]
+        alpha[valid, None] * rgb[bbox_index] * opacity_buffer[valid_mesh[:, 0], valid_mesh[:, 1], None]
     )
 
     # Update buffer
-    opacity_buffer[valid_mesh[:, 0], valid_mesh[:, 1]] = opacity_buffer[
-        valid_mesh[:, 0], valid_mesh[:, 1]
-    ] * (1 - alpha[valid])
+    opacity_buffer[valid_mesh[:, 0], valid_mesh[:, 1]] = opacity_buffer[valid_mesh[:, 0], valid_mesh[:, 1]] * (
+        1 - alpha[valid]
+    )
 
     return screen
 
@@ -344,10 +283,7 @@ def blend_gaussian(
 @click.option("--output_path", type=str, default="")
 @click.option("--generate_video", type=bool, default=False)
 def run_rasterization(
-    input_dir: str,
-    trained_model_path,
-    output_path: Optional[str],
-    generate_video: bool = False,
+    input_dir: str, trained_model_path, output_path: Optional[str], generate_video: bool = False,
 ):
     torch.set_num_threads(os.cpu_count())
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -367,39 +303,27 @@ def run_rasterization(
     qvec = torch.tensor(scene.qvec)
     tvec = torch.tensor(scene.tvec)
 
-    plydata = PlyData.read(
-        "data/trained_model/bonsai/point_cloud/iteration_30000/point_cloud.ply"
-    )
+    plydata = PlyData.read("data/trained_model/bonsai/point_cloud/iteration_30000/point_cloud.ply")
     gaussian_means = torch.tensor(
-        np.stack(
-            [
-                plydata.elements[0]["x"],
-                plydata.elements[0]["y"],
-                plydata.elements[0]["z"],
-            ]
-        ).T
+        np.stack([plydata.elements[0]["x"], plydata.elements[0]["y"], plydata.elements[0]["z"],]).T, device=device
     ).float()
-    opacity = torch.sigmoid(torch.tensor(np.array(plydata.elements[0]["opacity"])))
+    opacity = torch.sigmoid(torch.tensor(np.array(plydata.elements[0]["opacity"]), device=device))
 
     # The coordinates of the projection/camera center are given by -R^t * T, where R^t is the inverse/transpose of
     # the 3x3 rotation matrix composed from the quaternion and T is the translation vector.
-    world_to_camera = get_world_to_camera_matrix(qvec, tvec).transpose(0, 1)
+    world_to_camera = get_world_to_camera_matrix(qvec, tvec).transpose(0, 1).to(device)
     fov_x = 2 * np.arctan(cam_info[1].width / (2 * fx))
     fov_y = 2 * np.arctan(cam_info[1].height / (2 * fy))
     tan_fov_x = math.tan(fov_x * 0.5)
     tan_fov_y = math.tan(fov_y * 0.5)
 
-    projection_matrix = get_projection_matrix(fov_x, fov_y).transpose(0, 1)
+    projection_matrix = get_projection_matrix(fov_x, fov_y).transpose(0, 1).to(device)
 
-    full_proj_transform = (
-        world_to_camera.unsqueeze(0).bmm(projection_matrix.unsqueeze(0))
-    ).squeeze(0)
+    full_proj_transform = (world_to_camera.unsqueeze(0).bmm(projection_matrix.unsqueeze(0))).squeeze(0)
 
-    colors = read_color_components(plydata)
+    colors = read_color_components(plydata).to(device)
 
-    camera_space_gaussian_means = project_to_camera_space(
-        gaussian_means, world_to_camera
-    )
+    camera_space_gaussian_means = project_to_camera_space(gaussian_means, world_to_camera)
 
     rgb = sh_to_rgb(gaussian_means, colors, world_to_camera, degree=3)
 
@@ -422,8 +346,10 @@ def run_rasterization(
 
     # new_filter = screen_width_filtering & screen_height_filtering
 
+    covariance_matrices = get_covariance_matrix_from_mesh(plydata).float().to(device)
+
     projected_covariances = compute_2d_covariance(
-        get_covariance_matrix_from_mesh(plydata).float(),
+        covariance_matrices,
         camera_space_gaussian_means,
         tan_fov_x,
         tan_fov_y,
@@ -432,11 +358,9 @@ def run_rasterization(
     )
     projected_covariances[frustum_culling_filter] = 0.0
 
-    screen_means = ((p_proj[:, :2] + 1.0) * torch.tensor([width, height]) - 1.0) / 2
+    screen_means = ((p_proj[:, :2] + 1.0) * torch.tensor([width, height], device=device) - 1.0) / 2
 
-    rounded_bboxes = compute_covering_bbox(
-        screen_means, projected_covariances, width, height
-    )
+    rounded_bboxes = compute_covering_bbox(screen_means, projected_covariances, width, height)
 
     screen = torch.zeros((int(width), int(height), 3), device=device).float()
     opacity_buffer = torch.ones((int(width), int(height)), device=device).float()
@@ -475,9 +399,7 @@ def run_rasterization(
     iteration_step = 0
     for gaussian_index in tqdm.tqdm(sorted_gaussians):
         if bbox_area[gaussian_index] == 0 or (
-            sigma_x[gaussian_index] == 0
-            and sigma_y[gaussian_index] == 0
-            and sigma_x_y[gaussian_index] == 0
+            sigma_x[gaussian_index] == 0 and sigma_y[gaussian_index] == 0 and sigma_x_y[gaussian_index] == 0
         ):
             continue
         screen = blend_gaussian(
@@ -499,26 +421,14 @@ def run_rasterization(
         iteration_step += 1
 
         if iteration_step % 1000 == 0:
-            img = Image.fromarray(
-                (screen[:, :, :3].transpose(1, 0).cpu().numpy() * 255.0).astype(
-                    np.uint8
-                )
-            )
-            img.save(
-                os.path.join(
-                    "/home/arnaud/splat_images/",
-                    f"image_iter_{str(iteration_step).zfill(7)}.png",
-                )
-            )
+            img = Image.fromarray((screen[:, :, :3].transpose(1, 0).cpu().numpy() * 255.0).astype(np.uint8))
+            img.save(os.path.join("/home/arnaud/splat_images/", f"image_iter_{str(iteration_step).zfill(7)}.png",))
 
     for i in range(1, 21):
-        img.save(
-            os.path.join(
-                "/home/arnaud/splat_images/",
-                f"image_iter_{str(iteration_step + 1000*i).zfill(7)}.png",
-            )
-        )
+        img.save(os.path.join("/home/arnaud/splat_images/", f"image_iter_{str(iteration_step + 1000*i).zfill(7)}.png",))
 
+    if os.path.exists("output.mp4"):
+        os.remove("output.mp4")
     cmd = f'ffmpeg -framerate 10 -pattern_type glob -i "/home/arnaud/splat_images/image_iter_*.png" -r 10 -vcodec libx264 -s {width}x{height} -pix_fmt yuv420p output.mp4'
     subprocess.run(cmd, shell=True, check=True)
 

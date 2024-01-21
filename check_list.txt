@@ -26,3 +26,4 @@ TODOs:
 - Start thinking about outline
 - Clean up the rasterize file
 - clean up all code comments
+- give attribution for data_reader.py

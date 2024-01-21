@@ -42,9 +42,7 @@ def sh_to_rgb(xyz, sh, world_view_transform, degree=0):
     colors = sh[:, 0, :] * SH_0
 
     if degree > 0:
-        colors += (
-            -SH_C1 * y * sh[:, 1, :] + SH_C1 * z * sh[:, 2, :] - SH_C1 * x * sh[:, 3, :]
-        )
+        colors += -SH_C1 * y * sh[:, 1, :] + SH_C1 * z * sh[:, 2, :] - SH_C1 * x * sh[:, 3, :]
 
         if degree > 1:
             colors += (
