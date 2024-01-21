@@ -15,20 +15,14 @@
 - conic values are the same
 - sh colors are the same
 - sigmas are the same
-- Still a problem on the filtering
 - + the screen prints are done on a block level (i.e you don't do pixel by pixel)
-
-TODO -> check the blending (specifically the gaussian density and the distance between pixel and center)
-Looks like either the spread or blending is wrong
-
-There was an underflow on the sigmas, but that doesn't explain the current look of the rasterization
-Have to look into:
-- ordering
-- binning/chunking
-- densities/alphas values
+- View frustum filtering is on par
+- rect bbox == 0 filtering is on par
 
 
-# Expected value for first 2 2D covariances
-preproc[0] = [1.0728, -1.2140, 5.2402]
-preproc[1] = [135.9209, 66.8127, 43.2185]
-preproc[2] = [0.6305, 0.1136, 1.1046]
+TODOs:
+- Remove what's not needed
+- Add all workflow to generate the video
+- Start thinking about outline
+- Clean up the rasterize file
+- clean up all code comments

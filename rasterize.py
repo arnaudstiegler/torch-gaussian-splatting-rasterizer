@@ -1,4 +1,3 @@
-from tarfile import BLOCKSIZE
 import numpy as np
 from data_reader_utils import Camera
 from data_reader import read_scene
@@ -15,6 +14,9 @@ import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 import math
 from PIL import Image
+import subprocess
+from typing import Optional
+import click
 
 logger = logging.Logger(__name__)
 
@@ -43,9 +45,6 @@ def quaternion_to_rotation_matrix(quaternion: np.ndarray) -> np.ndarray:
 def project_to_camera_space(gaussian_means: np.ndarray, world_to_camera: np.ndarray) -> np.ndarray:
     # Note: @ is just a matmul
     # Here we project by; 1) applying the rotation, 2) adding the translation
-    	# 	matrix[0] * p.x + matrix[4] * p.y + matrix[8] * p.z + matrix[12],
-		# matrix[1] * p.x + matrix[5] * p.y + matrix[9] * p.z + matrix[13],
-		# matrix[2] * p.x + matrix[6] * p.y + matrix[10] * p.z + matrix[14],
     return gaussian_means @ world_to_camera[:3, :3] + world_to_camera[-1, :3]
 
 def get_covariance_matrix_from_mesh(mesh: PlyElement):
@@ -110,8 +109,8 @@ def filter_view_frustum(gaussian_means: np.ndarray, fov_x: float, fov_y: float):
     # TODO: should remove gaussians that are closer than the focal length
     # But there's something wrong with it, as all the gaussians have a mean
     # that's much smaller than the corresponding focal length
-    clip_plane_x_filtering = gaussian_means[:,0] < cam_info[1].params[0]
-    clip_plane_y_filtering = gaussian_means[:,1] < cam_info[1].params[1]
+    # clip_plane_x_filtering = gaussian_means[:,0] < cam_info[1].params[0]
+    # clip_plane_y_filtering = gaussian_means[:,1] < cam_info[1].params[1]
 
     # return clip_plane_x_filtering
     # return torch.ones(gaussian_means.shape[0]).bool()
@@ -191,21 +190,19 @@ def compute_2d_covariance(cov_matrices, camera_space_points, tan_fov_x, tan_fov_
 
     return proj_cov[:, :2,:2]
 
-def blend_gaussian(bbox_index, x_max, x_min, y_max, y_min, screen, screen_means, sigma_x, sigma_y, sigma_x_y, rgb, opacity_buffer):
+def blend_gaussian(bbox_index, x_max, x_min, y_max, y_min, screen, screen_means, sigma_x, sigma_y, sigma_x_y, rgb, opacity_buffer, opacity):
     x_grid = torch.arange(x_min[bbox_index], x_max[bbox_index])
     y_grid = torch.arange(y_min[bbox_index], y_max[bbox_index])
 
     mesh_x, mesh_y = torch.meshgrid(x_grid, y_grid, indexing='ij')
-    mesh = torch.stack([mesh_x, mesh_y], dim=-1).view(-1, 2).to(device)
+    mesh = torch.stack([mesh_x, mesh_y], dim=-1).view(-1, 2).to(screen_means.device)
 
     dist_to_mean = screen_means[bbox_index] - mesh
     gaussian_density = -0.5*(sigma_x[bbox_index]*(dist_to_mean[:,0]**2) + sigma_y[bbox_index]*(dist_to_mean[:,1]**2)) - sigma_x_y[bbox_index]*dist_to_mean[:,0]*dist_to_mean[:,1]
 
     only_pos = gaussian_density <= 0
 
-    # We want 741
-
-    alpha = torch.min(opacity[bbox_index]*torch.exp(gaussian_density), torch.tensor([MAX_GAUSSIAN_DENSITY], device=device)).float()
+    alpha = torch.min(opacity[bbox_index]*torch.exp(gaussian_density), torch.tensor([MAX_GAUSSIAN_DENSITY], device=screen_means.device)).float()
 
     # For numerical stability, we ignore 
     valid = (alpha > MIN_ALPHA) & only_pos
@@ -219,9 +216,14 @@ def blend_gaussian(bbox_index, x_max, x_min, y_max, y_min, screen, screen_means,
     return screen
 
 
-if __name__ == '__main__':
-
-    torch.set_num_threads(12)
+@click.command()
+@click.option('--input_dir', type=str, default='')
+@click.option('--trained_model_path', type=str, default='')
+@click.option('--output_path', type=str, default='')
+@click.option('--generate_video', type=bool, default=False)
+def run_rasterization(input_dir: str, trained_model_path, output_path: Optional[str], generate_video: bool = False):
+    torch.set_num_threads(os.cpu_count())
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
     scenes, cam_info = read_scene(path_to_scene='data/bonsai')
     scene = scenes[2]
@@ -231,7 +233,7 @@ if __name__ == '__main__':
     gt_img_path = os.path.join('data/bonsai/images_2', scene.name)
     img = Image.open(gt_img_path)
 
-    fx, fy, cx, cy  = cam_info[1].params
+    fx, fy, _, _  = cam_info[1].params
     focals = np.array([fx, fy])
     width, height = img.size
     
@@ -274,10 +276,10 @@ if __name__ == '__main__':
     p_proj = points[:,:-1] * p_w[:, None]
     
     # TODO: add depth filtering back
-    screen_width_filtering = torch.abs(points[:,0]) < points[:,-1]
-    screen_height_filtering = torch.abs(points[:,1]) < points[:,-1]
+    # screen_width_filtering = torch.abs(points[:,0]) < points[:,-1]
+    # screen_height_filtering = torch.abs(points[:,1]) < points[:,-1]
 
-    new_filter = screen_width_filtering & screen_height_filtering
+    # new_filter = screen_width_filtering & screen_height_filtering
 
     projected_covariances = compute_2d_covariance(get_covariance_matrix_from_mesh(plydata).float(), camera_space_gaussian_means, tan_fov_x, tan_fov_y, focals, world_to_camera)
     projected_covariances[frustum_culling_filter] = 0.0
@@ -286,25 +288,22 @@ if __name__ == '__main__':
 
     rounded_bboxes = compute_covering_bbox(screen_means, projected_covariances, width, height)
 
-    # 4 -> (r, g, b, depth)
-    screen = torch.zeros((int(width), int(height), 3)).float()
-    opacity_buffer = torch.ones((int(width), int(height))).float()
-
-    # TODO: might wanna add back last_pos to limit the number of gaussians that get backpropagated
-    last_pos = torch.zeros((int(width), int(height)))
+    screen = torch.zeros((int(width), int(height), 3), device=device).float()
+    opacity_buffer = torch.ones((int(width), int(height)), device=device).float()
 
     det = projected_covariances[:,0,0]*projected_covariances[:,1,1] - projected_covariances[:,1,0]*projected_covariances[:,0,1]
     # det can underflow into 0, so have to zero-out the inverse of det as well
+    # More generally, if the determinant is 0 for a gaussian, it means that its density does not span a 3D space (ie could be a line or plane)
     det_inv = torch.where(det==0, 0, 1/det)
 
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
     rounded_bboxes = rounded_bboxes.to(device)
-    screen_means = screen_means.to(device)
+    # screen_means = screen_means.to(device)
     projected_covariances = projected_covariances.to(device)
     det_inv = det_inv.to(device)
     screen = screen.to(device)
     rgb = rgb.to(device)
     opacity_buffer = opacity_buffer.to(device)
+    opacity.to(device)
 
     sigma_x = projected_covariances[:,1,1] * det_inv[:]
     sigma_y = projected_covariances[:,0,0] * det_inv[:]
@@ -320,12 +319,24 @@ if __name__ == '__main__':
 
     bbox_area = (x_max - x_min)*(y_max - y_min)
 
+    iteration_step = 0
     for gaussian_index in tqdm.tqdm(sorted_gaussians):
         if bbox_area[gaussian_index] == 0 or (sigma_x[gaussian_index] == 0 and sigma_y[gaussian_index]==0 and sigma_x_y[gaussian_index] == 0):
-            # This means the gaussian doesn't cover any pixel
-            # TODO: what does it mean when the sigmas are equal to 0?
             continue
-        screen = blend_gaussian(gaussian_index, x_max, x_min, y_max, y_min, screen, screen_means, sigma_x, sigma_y, sigma_x_y, rgb, opacity_buffer)
+        screen = blend_gaussian(gaussian_index, x_max, x_min, y_max, y_min, screen, screen_means, sigma_x, sigma_y, sigma_x_y, rgb, opacity_buffer, opacity)
+
+        iteration_step += 1
+
+        if iteration_step % 1000 == 0:
+            img = Image.fromarray((screen[:, :, :3].transpose(1,0).cpu().numpy()*255.0).astype(np.uint8))
+            img.save(os.path.join('/home/arnaud/splat_images/', f'image_iter_{str(iteration_step).zfill(7)}.png'))
+
+    
+    for i in range(1, 21):
+        img.save(os.path.join('/home/arnaud/splat_images/', f'image_iter_{str(iteration_step + 1000*i).zfill(7)}.png'))
+
+    cmd = f'ffmpeg -framerate 10 -pattern_type glob -i "/home/arnaud/splat_images/image_iter_*.png" -r 10 -vcodec libx264 -s {width}x{height} -pix_fmt yuv420p output.mp4'
+    subprocess.run(cmd, shell=True, check=True)
  
     # Create a figure
     plt.figure(figsize=(10, 10))
@@ -340,4 +351,7 @@ if __name__ == '__main__':
     plt.title('Reference Image')
 
     plt.show()
-    
+
+
+if __name__ == '__main__':
+    run_rasterization()
