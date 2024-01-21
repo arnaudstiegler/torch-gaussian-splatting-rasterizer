@@ -162,6 +162,7 @@ cython_debug/
 # Data folder
 data/
 reconstructed_scenes/
+trained_models/
 
 # C++ debug
 .dSYM
