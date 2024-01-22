@@ -2,13 +2,15 @@
 Reproducing Gaussian Splatting
 
 
-# TODO:
-- Introduce a class for one gaussian splat
-- Download some data with SFM info
-    - Not sure what to do with the current binary format, which is super cumbersome, and can't be pickled without code changes
-    - Ultimately, only need one scene to test things out
-- get the data ingestion pipeline up
-- 
+# How to run
+
+Data can be found at: `https://jonbarron.info/mipnerf360/`
+
+Trained models can be found at: `https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/datasets/pretrained/models.zip`
+
+
+To try out the rasterization, run the following:
+`python rasterize.py --input_dir data/bonsai/ --trained_model_path data/trained_model/bonsai --output_path data/rendered_images/ --generate_video`
 
 
 # FAQ

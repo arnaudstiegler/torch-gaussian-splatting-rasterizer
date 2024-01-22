@@ -1,7 +1,10 @@
+import os
+from typing import Dict, List, Tuple
+
 import torch
 from plyfile import PlyElement
-import os
-from data_reader import read_extrinsics_binary, read_intrinsics_binary
+
+from data_reader import BaseImage, Camera, read_extrinsics_binary, read_intrinsics_binary
 
 
 def read_color_components(plydata: PlyElement) -> torch.Tensor:
@@ -19,7 +22,7 @@ def read_color_components(plydata: PlyElement) -> torch.Tensor:
     return torch.concatenate([dc_parameters.unsqueeze(1), torch.stack(rgb_tensors)], dim=1).transpose(2, 0)
 
 
-def read_scene(path_to_scene: str):
+def read_scene(path_to_scene: str) -> Tuple[List[BaseImage], Dict[int, Camera]]:
     cameras_extrinsic_file = os.path.join(path_to_scene, "sparse/0", "images.bin")
     cameras_intrinsic_file = os.path.join(path_to_scene, "sparse/0", "cameras.bin")
     # This is the position for each image

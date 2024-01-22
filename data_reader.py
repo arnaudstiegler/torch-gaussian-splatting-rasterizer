@@ -1,6 +1,12 @@
-import numpy as np
-import struct
+"""
+Code on this file was taken from https://github.com/graphdeco-inria/gaussian-splatting
+"""
+
+
 import collections
+import struct
+
+import numpy as np
 
 """
 This is coming from the official implementation

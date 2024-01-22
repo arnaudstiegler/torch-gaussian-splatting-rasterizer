@@ -22,7 +22,7 @@
 
 TODOs:
 - Remove what's not needed
-- Add all workflow to generate the video
+- Add all workflow to generate the video -> Done
 - Start thinking about outline
 - Clean up the rasterize file
 - clean up all code comments
