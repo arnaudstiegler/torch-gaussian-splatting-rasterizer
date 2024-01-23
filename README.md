@@ -5,9 +5,11 @@ Its goal is to present a more digestible version of the original implementation 
 by rasterizing one gaussian at a time rather than distributing the rasterization per pixel (and parallelizing it with custom CUDA kernels)/
 As a result, it is highly unoptimized and not meant to be used for training/evaluation: rendering with this codebase will take about 5 minutes / image vs. less than a second for the original implementation.
 
-<video controls="" width="800" height="500" muted="" loop="" autoplay="">
-<source src="https://github.com/arnaudstiegler/gaussian-splat/raw/main/assets/render_video.mp4" type="video/mp4">
-</video>
+
+
+https://github.com/arnaudstiegler/gaussian-splat/assets/26485052/1f08a9c2-f086-40e1-b75e-28317408dc68
+
+
 
 # How to run
 
