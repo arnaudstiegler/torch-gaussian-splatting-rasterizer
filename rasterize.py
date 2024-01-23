@@ -443,7 +443,7 @@ def run_rasterization(
 
         if iteration_step % 1000 == 0 and generate_video:
             img = Image.fromarray((screen[:, :, :3].transpose(1, 0).cpu().numpy() * 255.0).astype(np.uint8))
-            img.save(os.path.join(output_path, f"image_iter_{str(iteration_step).zfill(7)}.png",))
+            img.save(os.path.join(output_path, 'images', f"image_iter_{str(iteration_step).zfill(7)}.png",))
 
         iteration_step += 1
 
@@ -455,7 +455,7 @@ def run_rasterization(
                 os.path.join(output_path, "images", f"image_iter_{str(iteration_step + 1000*i + 1).zfill(7)}.png",)
             )
 
-        video_path = os.path.join(output_path, "output.mp4")
+        video_path = os.path.join(output_path, "video_render.mp4")
         if os.path.exists(video_path):
             os.remove(video_path)
         cmd = f'ffmpeg -framerate {framerate} -pattern_type glob -i "{os.path.join(output_path, "image_iter_*.png")}" -r 10 -vcodec libx264 -s {width - (width % 2)}x{height - (height % 2)} -pix_fmt yuv420p {video_path}'
