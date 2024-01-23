@@ -16,7 +16,8 @@ from plyfile import PlyData, PlyElement
 from spherical_harmonics import sh_to_rgb
 from utils import read_color_components, read_scene
 
-logger = logging.Logger(__name__)
+logging.basicConfig(format='[%(asctime)s] %(levelname)s [%(pathname)s:%(lineno)d] - %(message)s',datefmt='%m-%d %H:%M:%S', level=logging.NOTSET)
+logger = logging.getLogger(__name__)
 
 
 # Z_FAR and Z_NEAR are computer graphics distance which mark the near sight and far sight limit
@@ -51,7 +52,7 @@ def quaternion_to_rotation_matrix(quaternion: torch.Tensor) -> torch.Tensor:
     ).float()
 
 
-def get_world_to_camera_matrix(normalized_qvec: np.ndarray, tvec: np.ndarray) -> torch.Tensor:
+def get_world_to_camera_matrix(normalized_qvec: torch.Tensor, tvec: torch.Tensor) -> torch.Tensor:
     """
     We create the matrix that transforms coordinates from World space (i.e agnostic to your POV, or simply the reference coordinate space)
     to the Camera space which is the system of coordinates based on the camera POV
@@ -301,19 +302,26 @@ def rasterize_gaussian(
 @click.option("--input_dir", type=str, default="")
 @click.option("--trained_model_path", type=str, default="")
 @click.option("--output_path", type=str, default="")
+@click.option("--scene-index", type=int, default=0)
+@click.option("--scale-factor", type=int, default=2)
 @click.option("--generate_video", is_flag=True, type=bool, default=False)
 def run_rasterization(
-    input_dir: str, trained_model_path, output_path: Optional[str], generate_video: bool = False,
-):
+    input_dir: str,
+    trained_model_path,
+    output_path: Optional[str],
+    scene_index: int = 0,
+    scale_factor: int = 2,
+    generate_video: bool = False,
+) -> None:
     torch.set_num_threads(os.cpu_count() - 1)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     scenes, cam_info = read_scene(path_to_scene=input_dir)
-    scene = scenes[2]
+    scene = scenes[scene_index]
 
-    # Loading the ground truth image
+    # Loading the ground truth image from Mip-NERF 360
     # images_{scale_fraction} i.e if 2, image has been shrunk by a factor 2
-    gt_img_path = os.path.join(os.path.join(input_dir, "images_2"), scene.name)
+    gt_img_path = os.path.join(os.path.join(input_dir, f"images_{scale_factor}"), scene.name)
     img = Image.open(gt_img_path)
 
     fx, fy, _, _ = cam_info[1].params
@@ -323,6 +331,9 @@ def run_rasterization(
     qvec = torch.tensor(scene.qvec)
     tvec = torch.tensor(scene.tvec)
 
+    logger.info(
+        f'Fetching trained model from: {os.path.join(trained_model_path, "point_cloud/iteration_30000/point_cloud.ply")}'
+    )
     plydata = PlyData.read(os.path.join(trained_model_path, "point_cloud/iteration_30000/point_cloud.ply"))
     gaussian_means = torch.tensor(
         np.stack([plydata.elements[0]["x"], plydata.elements[0]["y"], plydata.elements[0]["z"],]).T, device=device
@@ -426,12 +437,12 @@ def run_rasterization(
     if generate_video:
         for i in range(1, 21):
             # We add 2 secs of video to let some time to see the fully recreated image before the video ends
-            img.save(os.path.join(output_path, f"image_iter_{str(iteration_step + 1000*i).zfill(7)}.png",))
+            img.save(os.path.join(output_path, f"image_iter_{str(iteration_step + 1000*i + 1).zfill(7)}.png",))
 
         video_path = os.path.join(output_path, "output.mp4")
         if os.path.exists(video_path):
             os.remove(video_path)
-        cmd = f'ffmpeg -framerate 20 -pattern_type glob -i "/home/arnaud/splat_images/image_iter_*.png" -r 10 -vcodec libx264 -s {width - (width % 2)}x{height - (height % 2)} -pix_fmt yuv420p {video_path}'
+        cmd = f'ffmpeg -framerate 20 -pattern_type glob -i "{os.path.join(output_path, "image_iter_*.png")}" -r 10 -vcodec libx264 -s {width - (width % 2)}x{height - (height % 2)} -pix_fmt yuv420p {video_path}'
         subprocess.run(cmd, shell=True, check=True)
 
     # Create a figure

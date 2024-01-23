@@ -1,20 +1,19 @@
 import torch
 
-# See table of real spherical harmonics at: spherical_harmonics.md
 
-# Zero-th order
+# Zero-th order coefficients
 SH_0 = 0.28209479177387814  # this is sqrt(1/(4*PI))
-# First order (there should be 3 difference coefficients but all 3 are equal)
+# First order coefficients
 SH_C1 = 0.4886025119029199  # this is 0.5*math.sqrt(3/math.pi)
-# Second order
+# Second order coefficients
 SH_C2 = [
     1.0925484305920792,
-    -1.0925484305920792,  # Not sure where the - is coming from but this is how it's formatted on the official repo
+    -1.0925484305920792,
     0.31539156525252005,
-    -1.0925484305920792,  # Same comment
+    -1.0925484305920792,
     0.5462742152960396,
 ]
-# Third order
+# Third order coefficients
 SH_C3 = [
     -0.5900435899266435,
     2.890611442640554,
@@ -26,11 +25,14 @@ SH_C3 = [
 ]
 
 
-def sh_to_rgb(xyz, sh, world_view_transform, degree=0):
+def sh_to_rgb(xyz: torch.Tensor, sh: torch.Tensor, world_view_transform: torch.Tensor, degree: int = 0) -> torch.Tensor:
     """
-    Formula to retrieve RGB colors from polynomial spherical harmonics 
-    """
+    See https://en.wikipedia.org/wiki/Table_of_spherical_harmonics for a good explanation on how spherical harmonics are
+    represented.
 
+    Note that here, we use the cartesian coordinates to represent them, which consists in expressing angles using x, y, z
+    which explains the slight differences between the wikipedia table and the computation below.
+    """
     cam_center = world_view_transform.inverse()[3, :3]
     dir = xyz - cam_center
     dir = dir / torch.norm(dir, dim=1).unsqueeze(-1).expand(-1, 3)
@@ -63,11 +65,9 @@ def sh_to_rgb(xyz, sh, world_view_transform, degree=0):
                     + SH_C3[6] * x * (x * x - 3 * y * y) * sh[:, 15, :]
                 )
 
-    colors = colors + 0.5
-
     # Colors are centered around 0
     # This offset recenters them around 0.5 (so in the [0,1] range)
-    # colors += 0.5
+    colors += 0.5
     # Since there's a trainable component in the mix, we have to clamp colors to ensure all values are positive
     colors = torch.clamp(colors, 0, 1)
 
