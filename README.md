@@ -6,7 +6,7 @@ by rasterizing one gaussian at a time rather than distributing the rasterization
 As a result, it is highly unoptimized and not meant to be used for training/evaluation: rendering with this codebase will take about 5 minutes / image vs. less than a second for the original implementation.
 
 <video controls="" width="800" height="500" muted="" loop="" autoplay="">
-<source src="https://github.com/arnaudstiegler/gaussian-splat/blob/main/assets/render_video.mp4" type="video/mp4">
+<source src="https://github.com/arnaudstiegler/gaussian-splat/raw/main/assets/render_video.mp4" type="video/mp4">
 </video>
 
 # How to run
