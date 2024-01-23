@@ -16,7 +16,11 @@ from plyfile import PlyData, PlyElement
 from spherical_harmonics import sh_to_rgb
 from utils import read_color_components, read_scene
 
-logging.basicConfig(format='[%(asctime)s] %(levelname)s [%(pathname)s:%(lineno)d] - %(message)s',datefmt='%m-%d %H:%M:%S', level=logging.NOTSET)
+logging.basicConfig(
+    format="[%(asctime)s] %(levelname)s [%(pathname)s:%(lineno)d] - %(message)s",
+    datefmt="%m-%d %H:%M:%S",
+    level=logging.NOTSET,
+)
 logger = logging.getLogger(__name__)
 
 
@@ -171,6 +175,7 @@ def compute_covering_bbox(
         torch.max((trace ** 2) / 4.0 - det, torch.tensor([0.1], device=screen_means.device))
     )
 
+    # This is equivalent to taking 3 times the maximum standard deviation from the projected gaussian
     max_spread = torch.ceil(
         GAUSSIAN_SPREAD * torch.sqrt(torch.max(torch.stack([lambda1, lambda2], dim=-1), dim=-1).values)
     )
@@ -316,6 +321,8 @@ def run_rasterization(
     torch.set_num_threads(os.cpu_count() - 1)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
+    # Loading the scenes which are scene-specific information
+    logger.info(f"Fetching scenes from: {input_dir}")
     scenes, cam_info = read_scene(path_to_scene=input_dir)
     scene = scenes[scene_index]
 
@@ -328,6 +335,11 @@ def run_rasterization(
     focals = np.array([fx, fy])
     width, height = img.size
 
+    fov_x = 2 * np.arctan(cam_info[1].width / (2 * fx))
+    fov_y = 2 * np.arctan(cam_info[1].height / (2 * fy))
+    tan_fov_x = math.tan(fov_x * 0.5)
+    tan_fov_y = math.tan(fov_y * 0.5)
+
     qvec = torch.tensor(scene.qvec)
     tvec = torch.tensor(scene.tvec)
 
@@ -338,52 +350,43 @@ def run_rasterization(
     gaussian_means = torch.tensor(
         np.stack([plydata.elements[0]["x"], plydata.elements[0]["y"], plydata.elements[0]["z"],]).T, device=device
     ).float()
+    covariance_matrices = get_covariance_matrix_from_mesh(plydata).float().to(device)
     opacity = torch.sigmoid(torch.tensor(np.array(plydata.elements[0]["opacity"]), device=device))
 
-    # The coordinates of the projection/camera center are given by -R^t * T, where R^t is the inverse/transpose of
-    # the 3x3 rotation matrix composed from the quaternion and T is the translation vector.
+    # Matrices to project coordinates from the reference to camera space
     world_to_camera = get_world_to_camera_matrix(qvec, tvec).transpose(0, 1).to(device)
-    fov_x = 2 * np.arctan(cam_info[1].width / (2 * fx))
-    fov_y = 2 * np.arctan(cam_info[1].height / (2 * fy))
-    tan_fov_x = math.tan(fov_x * 0.5)
-    tan_fov_y = math.tan(fov_y * 0.5)
-
     projection_matrix = get_projection_matrix(fov_x, fov_y).transpose(0, 1).to(device)
-
+    # Combine both
     full_proj_transform = (world_to_camera.unsqueeze(0).bmm(projection_matrix.unsqueeze(0))).squeeze(0)
 
+    # Extracting the gaussian colors
     colors = read_color_components(plydata).to(device)
-
-    camera_space_gaussian_means = project_to_camera_space(gaussian_means, world_to_camera)
-
     rgb = sh_to_rgb(gaussian_means, colors, world_to_camera, degree=3)
 
-    # Computing only with the view matrix
-    p_view = gaussian_means @ world_to_camera[:3, :] + world_to_camera[-1, :]
+    # Projecting pionts into camera space for sub-tasks downstream
+    camera_space_gaussian_means = project_to_camera_space(gaussian_means, world_to_camera)
 
-    # This is new, and exactly based on what the paper is doing
+    # Projecting points into screen space
     points = gaussian_means @ full_proj_transform[:3, :] + full_proj_transform[-1, :]
 
-    # Frustum culling
-    frustum_culling_filter = p_view[:, 2] < 0.2
+    # Frustum culling (essentially filtering the points that are too close to the camera)
+    frustum_culling_filter = camera_space_gaussian_means[:, 2] < 0.2
     points[frustum_culling_filter] = 0.0
 
+    # Applying perspective divide to project point to NDC space
     p_w = 1.0 / (points[:, -1] + 0.0000001)
     p_proj = points[:, :-1] * p_w[:, None]
-
-    covariance_matrices = get_covariance_matrix_from_mesh(plydata).float().to(device)
 
     projected_covariances = compute_2d_covariance(
         covariance_matrices, camera_space_gaussian_means, tan_fov_x, tan_fov_y, focals, world_to_camera,
     )
+    # Setting the gaussian spread to 0.0 means they won't be projected during rasterization
     projected_covariances[frustum_culling_filter] = 0.0
 
-    screen_means = ((p_proj[:, :2] + 1.0) * torch.tensor([width, height], device=device) - 1.0) / 2
+    # Project back to screen space
+    screen_gaussians = ((p_proj[:, :2] + 1.0) * torch.tensor([width, height], device=device) - 1.0) / 2
 
-    rounded_bboxes = compute_covering_bbox(screen_means, projected_covariances, width, height)
-
-    screen = torch.zeros((int(width), int(height), 3), device=device).float()
-    opacity_buffer = torch.ones((int(width), int(height)), device=device).float()
+    covering_bboxes = compute_covering_bbox(screen_gaussians, projected_covariances, width, height)
 
     det = (
         projected_covariances[:, 0, 0] * projected_covariances[:, 1, 1]
@@ -403,29 +406,39 @@ def run_rasterization(
         dim=-1,
     )
 
-    x_min = torch.clamp(rounded_bboxes[:, 0] * BLOCK_SIZE, 0, width - 1)
-    y_min = torch.clamp(rounded_bboxes[:, 1] * BLOCK_SIZE, 0, height - 1)
-    x_max = torch.clamp(rounded_bboxes[:, 2] * BLOCK_SIZE, 0, width - 1)
-    y_max = torch.clamp(rounded_bboxes[:, 3] * BLOCK_SIZE, 0, height - 1)
-
+    # As mentioned earlier, we project those bboxes back to screen space
+    # This is not required if we don't use the Block size for the CUDA kernels
+    x_min = torch.clamp(covering_bboxes[:, 0] * BLOCK_SIZE, 0, width - 1)
+    y_min = torch.clamp(covering_bboxes[:, 1] * BLOCK_SIZE, 0, height - 1)
+    x_max = torch.clamp(covering_bboxes[:, 2] * BLOCK_SIZE, 0, width - 1)
+    y_max = torch.clamp(covering_bboxes[:, 3] * BLOCK_SIZE, 0, height - 1)
     bboxes = torch.stack([x_min, y_min, x_max, y_max], dim=-1)
+    bbox_area = (bboxes[:, 2] - bboxes[:, 0]) * (bboxes[:, 3] - bboxes[:, 1])
 
-    depths = p_view[:, 2]
+    # Since we do alpha-blending for rasterization, we need to rasterize them in
+    # increasing depth order (i.e from near to far)
+    depths = camera_space_gaussian_means[:, 2]
     depth_sorted_gaussians = torch.sort(depths).indices
 
-    bbox_area = (bboxes[:, 2] - bboxes[:, 0]) * (bboxes[:, 3] - bboxes[:, 1])
+    if generate_video:
+        os.makedirs(output_path, exist_ok=True)
+        os.makedirs(os.path.join(output_path, "images"), exist_ok=True)
 
     """
     Here is where the inefficiency comes in compared to the official implementation:
-    since we cannot parallelize the rasterization, we have to loop over the gaussians and
-    rasterize them one by one (instead of distributing this process with a CUDA kernel)
+    since we cannot parallelize the rasterization for each pixel, we have to loop over the 
+    gaussians and rasterize them one by one (instead of distributing this process with a CUDA kernel)
     """
     iteration_step = 0
+    screen = torch.zeros((int(width), int(height), 3), device=device).float()
+    opacity_buffer = torch.ones((int(width), int(height)), device=device).float()
+
     for gaussian_index in tqdm.tqdm(depth_sorted_gaussians):
         if bbox_area[gaussian_index] == 0 or (torch.any(sigmas[gaussian_index] == 0)):
+            # Either the gaussian has a null area or its opacity is 0
             continue
         screen, opacity_buffer = rasterize_gaussian(
-            gaussian_index, bboxes, screen, screen_means, sigmas, rgb, opacity_buffer, opacity,
+            gaussian_index, bboxes, screen, screen_gaussians, sigmas, rgb, opacity_buffer, opacity,
         )
 
         if iteration_step % 1000 == 0 and generate_video:
@@ -435,25 +448,26 @@ def run_rasterization(
         iteration_step += 1
 
     if generate_video:
-        for i in range(1, 21):
+        framerate = 20
+        for i in range(1, 2 * framerate + 1):
             # We add 2 secs of video to let some time to see the fully recreated image before the video ends
-            img.save(os.path.join(output_path, f"image_iter_{str(iteration_step + 1000*i + 1).zfill(7)}.png",))
+            img.save(
+                os.path.join(output_path, "images", f"image_iter_{str(iteration_step + 1000*i + 1).zfill(7)}.png",)
+            )
 
         video_path = os.path.join(output_path, "output.mp4")
         if os.path.exists(video_path):
             os.remove(video_path)
-        cmd = f'ffmpeg -framerate 20 -pattern_type glob -i "{os.path.join(output_path, "image_iter_*.png")}" -r 10 -vcodec libx264 -s {width - (width % 2)}x{height - (height % 2)} -pix_fmt yuv420p {video_path}'
+        cmd = f'ffmpeg -framerate {framerate} -pattern_type glob -i "{os.path.join(output_path, "image_iter_*.png")}" -r 10 -vcodec libx264 -s {width - (width % 2)}x{height - (height % 2)} -pix_fmt yuv420p {video_path}'
         subprocess.run(cmd, shell=True, check=True)
 
-    # Create a figure
     plt.figure(figsize=(10, 10))
 
-    plt.subplot(2, 1, 1)  # 2 rows, 1 column1, 1st subplot
+    plt.subplot(2, 1, 1)
     plt.imshow(screen[:, :, :3].transpose(1, 0).cpu())
-    plt.title("Reconstructed Image")
+    plt.title("Rendered Image")
 
-    # Display the second image
-    plt.subplot(2, 1, 2)  # 2 rows, 1 column, 2nd subplot
+    plt.subplot(2, 1, 2)
     plt.imshow(mpimg.imread(gt_img_path))
     plt.title("Reference Image")
 

@@ -1,6 +1,5 @@
 import torch
 
-
 # Zero-th order coefficients
 SH_0 = 0.28209479177387814  # this is sqrt(1/(4*PI))
 # First order coefficients

@@ -4,11 +4,12 @@ from typing import Dict, List, Tuple
 import torch
 from plyfile import PlyElement
 
-from data_reader import BaseImage, Camera, read_extrinsics_binary, read_intrinsics_binary
+from data_reader import (BaseImage, Camera, read_extrinsics_binary,
+                         read_intrinsics_binary)
 
 
 def read_color_components(plydata: PlyElement) -> torch.Tensor:
-    '''
+    """
     Reads color attributes from the trained model.
     Since the color of a given gaussian enveloppe can differ based on the orientation/POV, we model gaussian colors using spherical harmonics
     This method is presented in: http://arxiv.org/abs/2205.14330
@@ -16,7 +17,7 @@ def read_color_components(plydata: PlyElement) -> torch.Tensor:
     f_dc is a `[N,3]` vector that corresponds to the base color in RGB format for the zero-th order spherical harmonic.
     f_rest are the remaining coefficients for the harmonics where the highest-order is 3, which means 15 coefficient per color, i.e 45 coefficients total.
     See: https://github.com/graphdeco-inria/gaussian-splatting/issues/485
-    '''
+    """
 
     dc_parameters = torch.stack([torch.tensor(plydata.elements[0][f"f_dc_{rgb_index}"]) for rgb_index in range(3)])
 
