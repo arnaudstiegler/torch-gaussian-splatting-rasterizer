@@ -19,11 +19,17 @@ from utils import read_color_components, read_scene
 logger = logging.Logger(__name__)
 
 
+# Z_FAR and Z_NEAR are computer graphics distance which mark the near sight and far sight limit
+# i.e you cannot something closer than Z_NEAR or farther than Z_FAR
 Z_FAR = 100.0
 Z_NEAR = 0.01
+# This is a scaling factor set in the original implementation. Not sure whether there's an actual reason to use this particular value
 GAUSSIAN_SPREAD = 3
+# Size of a processing block for a CUDA kernel (i.e a block processes a 16*16 set of pixels)
 BLOCK_SIZE = 16
+# Set maximum density to prevent overflow issues
 MAX_GAUSSIAN_DENSITY = 0.99
+# Minimum alpha before stopping to blend new gaussians (they will not be visible in any case)
 MIN_ALPHA = 1 / 255
 
 
@@ -77,7 +83,11 @@ def project_to_camera_space(gaussian_means: torch.Tensor, world_to_camera: torch
 
 def get_covariance_matrix_from_mesh(mesh: PlyElement) -> torch.Tensor:
     """
-    See paper: they formulate gaussian covariances as scales and rotations
+    Covariance matrices are trained parameters. They will define the spread of each gaussian in the 3D space, and therefore
+    the area of pixels covered by the gaussians once projected in 2D
+
+    See paper: they formulate gaussian covariances using a scale matrix S and a rotation matrix R
+    such that Cov = R * S * S_t * R_t
     """
     scales = torch.exp(
         torch.tensor(np.stack([mesh.elements[0]["scale_0"], mesh.elements[0]["scale_1"], mesh.elements[0]["scale_2"],]))
@@ -105,7 +115,15 @@ def get_covariance_matrix_from_mesh(mesh: PlyElement) -> torch.Tensor:
     return M @ torch.permute(M, (0, 2, 1))
 
 
-def get_projection_matrix(fov_x, fov_y) -> torch.Tensor:
+def get_projection_matrix(fov_x: float, fov_y: float) -> torch.Tensor:
+    """
+    The projection matrix models the transformation from the 3D camera space to
+    the 2D screen space: effectively, you project all points onto that 2D plane
+    using this matrix.
+
+    It takes into account the field of view (what is visible from the camera for x-y axes)
+    along with Z_FAR and Z_NEAR which accounts for points visible depth-wise
+    """
     tan_half_fov_x = math.tan((fov_x / 2))
     tan_half_fov_y = math.tan((fov_y / 2))
 
@@ -131,6 +149,12 @@ def get_projection_matrix(fov_x, fov_y) -> torch.Tensor:
 def compute_covering_bbox(
     screen_means: torch.Tensor, projected_covariances: torch.Tensor, width: float, height: float,
 ) -> torch.Tensor:
+    """
+    For each 2D projected gaussian, we first compute its spread using its eigen values. And since
+    we need to know the covered area in terms of pixels (ie. cannot model an ellipsoid), we approximate
+    the spread with a bounding box centered on the gaussian.
+    """
+
     det = (
         projected_covariances[:, 0, 0] * projected_covariances[:, 1, 1]
         - projected_covariances[:, 1, 0] * projected_covariances[:, 0, 1]
@@ -138,8 +162,7 @@ def compute_covering_bbox(
     trace = projected_covariances[:, 0, 0] + projected_covariances[:, 1, 1]
 
     # Have to clamp to 0 in case lambda is negative (no guarantee it is not)
-    # To preven instabilities, we add the max
-    # 0.1 is the value provided by the paper
+    # To preven instabilities, we set the max at 0.1 (value defined in the original implementation)
     lambda1 = trace / 2.0 + torch.sqrt(
         torch.max((trace ** 2) / 4.0 - det, torch.tensor([0.1], device=screen_means.device))
     )
@@ -151,6 +174,9 @@ def compute_covering_bbox(
         GAUSSIAN_SPREAD * torch.sqrt(torch.max(torch.stack([lambda1, lambda2], dim=-1), dim=-1).values)
     )
 
+    # The original implementation divides the screen space in blocks of size BLOCK_SIZE
+    # We keep this paradigm here so that we can more easily map this step back to the original implementation
+    # but for this simplified implementation, this is not required.
     bboxes = torch.stack(
         [
             torch.clamp((screen_means[:, 0] - (max_spread)) / BLOCK_SIZE, 0, width - 1),
@@ -162,18 +188,23 @@ def compute_covering_bbox(
     )
 
     # Clamp again for gaussians that spread outside of the screen
-    rounded_bboxes = torch.floor(bboxes).to(int)
-    return rounded_bboxes
+    bboxes = torch.floor(bboxes).to(int)
+    return bboxes
 
 
 def compute_2d_covariance(
     cov_matrices, camera_space_points, tan_fov_x, tan_fov_y, focals, world_to_camera
 ) -> torch.Tensor:
+    """
+    The spread of each gaussian needs to be projected in screen space (similarly to each gaussian center).
+    This is done by projecting the covariance matrices of each gaussian using the EWA Splatting technique.
+    
+    The original implementation is located at: https://github.com/graphdeco-inria/diff-gaussian-rasterization/blob/59f5f77e3ddbac3ed9db93ec2cfe99ed6c5d121d/cuda_rasterizer/forward.cu#L74
+    """
     limx = torch.tensor([1.3 * tan_fov_x], device=cov_matrices.device)
     limy = torch.tensor([1.3 * tan_fov_y], device=cov_matrices.device)
 
     # TODO: this should be fixed upstream
-    # TODO: Somehow width and height are twice what they should be also
     focal_x, focal_y = focals / 2
 
     txtz = camera_space_points[:, 0] / camera_space_points[:, 2]
@@ -181,6 +212,7 @@ def compute_2d_covariance(
     tx = torch.min(limx, torch.max(-limx, txtz)) * camera_space_points[:, 2]
     ty = torch.min(limy, torch.max(-limy, tytz)) * camera_space_points[:, 2]
 
+    # Compute the Jacobian matrix
     J = torch.zeros((camera_space_points.shape[0], 3, 3), device=cov_matrices.device)
     J[:, 0, 0] = focal_x / camera_space_points[:, 2]
     J[:, 0, 2] = -(focal_x * tx) / (camera_space_points[:, 2] * camera_space_points[:, 2])
@@ -213,46 +245,51 @@ def compute_2d_covariance(
 
 
 def rasterize_gaussian(
-    bbox_index: int,
+    gaussian_index: int,
     bboxes: torch.Tensor,
     screen: torch.Tensor,
     screen_means: torch.Tensor,
-    sigma_x,
-    sigma_y,
-    sigma_x_y,
+    sigmas: torch.Tensor,
     rgb: torch.Tensor,
     opacity_buffer: torch.Tensor,
     opacity: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    x_grid = torch.arange(bboxes[bbox_index, 0], bboxes[bbox_index, 2])
-    y_grid = torch.arange(bboxes[bbox_index, 1], bboxes[bbox_index, 3])
+    """
+    Here we rasterize a gaussian, ie. compute what pixels are covered by the gaussian and its spread
+    and "blend" the gaussian onto the existing screen (where previous gaussians have already been blended)
+    """
+    sigma_x, sigma_y, sigma_x_y = sigmas[gaussian_index]
+
+    x_grid = torch.arange(bboxes[gaussian_index, 0], bboxes[gaussian_index, 2])
+    y_grid = torch.arange(bboxes[gaussian_index, 1], bboxes[gaussian_index, 3])
 
     mesh_x, mesh_y = torch.meshgrid(x_grid, y_grid, indexing="ij")
     mesh = torch.stack([mesh_x, mesh_y], dim=-1).view(-1, 2).to(screen_means.device)
 
-    dist_to_mean = screen_means[bbox_index] - mesh
-
+    # We compute the transmittance of the gaussian at each pixel covered which determines how much the new
+    # gaussian contributes to the color of the resulting pixel
+    dist_to_mean = screen_means[gaussian_index] - mesh
     gaussian_density = (
-        -0.5 * (sigma_x[bbox_index] * (dist_to_mean[:, 0] ** 2) + sigma_y[bbox_index] * (dist_to_mean[:, 1] ** 2))
-        - sigma_x_y[bbox_index] * dist_to_mean[:, 0] * dist_to_mean[:, 1]
+        -0.5 * (sigma_x * (dist_to_mean[:, 0] ** 2) + sigma_y * (dist_to_mean[:, 1] ** 2))
+        - sigma_x_y * dist_to_mean[:, 0] * dist_to_mean[:, 1]
     )
 
-    only_pos = gaussian_density <= 0
-
     alpha = torch.min(
-        opacity[bbox_index] * torch.exp(gaussian_density),
+        opacity[gaussian_index] * torch.exp(gaussian_density),
         torch.tensor([MAX_GAUSSIAN_DENSITY], device=screen_means.device),
     ).float()
 
-    # For numerical stability, we ignore
-    valid = (alpha > MIN_ALPHA) & only_pos
+    # For numerical stability
+    valid = (alpha > MIN_ALPHA) & (gaussian_density <= 0)
     valid_mesh = mesh[valid, :]
 
+    # Update the screen pixels with the alpha blending values for each of the pixel
     screen[valid_mesh[:, 0], valid_mesh[:, 1], :] += (
-        alpha[valid, None] * rgb[bbox_index] * opacity_buffer[valid_mesh[:, 0], valid_mesh[:, 1], None]
+        alpha[valid, None] * rgb[gaussian_index] * opacity_buffer[valid_mesh[:, 0], valid_mesh[:, 1], None]
     )
 
-    # Update buffer
+    # Update the opacity buffer to track how much transmittance is left before each pixel is "saturated"
+    # i.e cannot transmit color from "deeper" gaussians
     opacity_buffer[valid_mesh[:, 0], valid_mesh[:, 1]] = opacity_buffer[valid_mesh[:, 0], valid_mesh[:, 1]] * (
         1 - alpha[valid]
     )
@@ -268,7 +305,7 @@ def rasterize_gaussian(
 def run_rasterization(
     input_dir: str, trained_model_path, output_path: Optional[str], generate_video: bool = False,
 ):
-    torch.set_num_threads(os.cpu_count())
+    torch.set_num_threads(os.cpu_count() - 1)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     scenes, cam_info = read_scene(path_to_scene=input_dir)
@@ -345,9 +382,15 @@ def run_rasterization(
     # More generally, if the determinant is 0 for a gaussian, it means that its density does not span a 3D space (ie could be a line or plane)
     det_inv = torch.where(det == 0, 0, 1 / det)
 
-    sigma_x = projected_covariances[:, 1, 1] * det_inv[:]
-    sigma_y = projected_covariances[:, 0, 0] * det_inv[:]
-    sigma_x_y = -projected_covariances[:, 0, 1] * det_inv[:]
+    # Computing the
+    sigmas = torch.stack(
+        [
+            projected_covariances[:, 1, 1] * det_inv[:],
+            projected_covariances[:, 0, 0] * det_inv[:],
+            -projected_covariances[:, 0, 1] * det_inv[:],
+        ],
+        dim=-1,
+    )
 
     x_min = torch.clamp(rounded_bboxes[:, 0] * BLOCK_SIZE, 0, width - 1)
     y_min = torch.clamp(rounded_bboxes[:, 1] * BLOCK_SIZE, 0, height - 1)
@@ -368,12 +411,10 @@ def run_rasterization(
     """
     iteration_step = 0
     for gaussian_index in tqdm.tqdm(depth_sorted_gaussians):
-        if bbox_area[gaussian_index] == 0 or (
-            sigma_x[gaussian_index] == 0 and sigma_y[gaussian_index] == 0 and sigma_x_y[gaussian_index] == 0
-        ):
+        if bbox_area[gaussian_index] == 0 or (torch.any(sigmas[gaussian_index] == 0)):
             continue
         screen, opacity_buffer = rasterize_gaussian(
-            gaussian_index, bboxes, screen, screen_means, sigma_x, sigma_y, sigma_x_y, rgb, opacity_buffer, opacity,
+            gaussian_index, bboxes, screen, screen_means, sigmas, rgb, opacity_buffer, opacity,
         )
 
         if iteration_step % 1000 == 0 and generate_video:
@@ -409,4 +450,5 @@ def run_rasterization(
 
 
 if __name__ == "__main__":
+
     run_rasterization()
