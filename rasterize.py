@@ -210,7 +210,9 @@ def compute_2d_covariance(
     limx = torch.tensor([1.3 * tan_fov_x], device=cov_matrices.device)
     limy = torch.tensor([1.3 * tan_fov_y], device=cov_matrices.device)
 
-    # TODO: this should be fixed upstream
+    # In the original implementation, the formula for the focals is missing a factor 2
+    # See: https://github.com/graphdeco-inria/diff-gaussian-rasterization/blob/59f5f77e3ddbac3ed9db93ec2cfe99ed6c5d121d/cuda_rasterizer/rasterizer_impl.cu#L222-L223
+    # To account for it, we divide by 2 here
     focal_x, focal_y = focals / 2
 
     txtz = camera_space_points[:, 0] / camera_space_points[:, 2]
@@ -335,6 +337,8 @@ def run_rasterization(
     focals = np.array([fx, fy])
     width, height = img.size
 
+    # Note: in the original implementation, there's a missing factor 2 in that formula
+    # We'll account for it downstream
     fov_x = 2 * np.arctan(cam_info[1].width / (2 * fx))
     fov_y = 2 * np.arctan(cam_info[1].height / (2 * fy))
     tan_fov_x = math.tan(fov_x * 0.5)
