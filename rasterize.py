@@ -462,7 +462,7 @@ def run_rasterization(
         video_path = os.path.join(output_path, "video_render.mp4")
         if os.path.exists(video_path):
             os.remove(video_path)
-        cmd = f'ffmpeg -framerate {framerate} -pattern_type glob -i "{os.path.join(output_path, "image_iter_*.png")}" -r 10 -vcodec libx264 -s {width - (width % 2)}x{height - (height % 2)} -pix_fmt yuv420p {video_path}'
+        cmd = f'ffmpeg -framerate {framerate} -pattern_type glob -i "{os.path.join(output_path, "images", "image_iter_*.png")}" -r 10 -vcodec libx264 -s {width - (width % 2)}x{height - (height % 2)} -pix_fmt yuv420p {video_path}'
         subprocess.run(cmd, shell=True, check=True)
 
     plt.figure(figsize=(10, 10))
