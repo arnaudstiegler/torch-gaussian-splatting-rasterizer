@@ -4,8 +4,7 @@ from typing import Dict, List, Tuple
 import torch
 from plyfile import PlyElement
 
-from data_reader import (BaseImage, Camera, read_extrinsics_binary,
-                         read_intrinsics_binary)
+from data_reader import BaseImage, Camera, read_extrinsics_binary, read_intrinsics_binary
 
 
 def read_color_components(plydata: PlyElement) -> torch.Tensor:

@@ -447,7 +447,7 @@ def run_rasterization(
 
         if iteration_step % 1000 == 0 and generate_video:
             img = Image.fromarray((screen[:, :, :3].transpose(1, 0).cpu().numpy() * 255.0).astype(np.uint8))
-            img.save(os.path.join(output_path, 'images', f"image_iter_{str(iteration_step).zfill(7)}.png",))
+            img.save(os.path.join(output_path, "images", f"image_iter_{str(iteration_step).zfill(7)}.png",))
 
         iteration_step += 1
 
